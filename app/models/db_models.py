@@ -21,6 +21,19 @@ class DeviceAlias(Base):
     updated_at: Mapped[datetime] = mapped_column(default=utc_now, onupdate=utc_now)
 
 
+class Device(Base):
+    __tablename__ = "devices"
+
+    ieee_addr: Mapped[str] = mapped_column(String(32), primary_key=True)
+    network_addr: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    endpoint: Mapped[Optional[int]] = mapped_column(nullable=True)
+    supports_hs: Mapped[bool] = mapped_column(Boolean, default=False)
+    supports_xy: Mapped[bool] = mapped_column(Boolean, default=False)
+    supports_ct: Mapped[bool] = mapped_column(Boolean, default=False)
+    online: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_seen: Mapped[datetime] = mapped_column(default=utc_now, onupdate=utc_now)
+
+
 class Scenario(Base):
     __tablename__ = "scenarios"
 
