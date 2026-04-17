@@ -1,6 +1,10 @@
 # Agent workspace
 .agents/
 
+# Frontend
+frontend/node_modules/
+static/dist/
+
 # Python
 .venv/
 __pycache__/

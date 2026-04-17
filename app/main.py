@@ -7,9 +7,9 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
+
 
 from app.config import get_settings
 from app.dependencies import verify_api_key
@@ -139,12 +139,8 @@ def create_app() -> FastAPI:
     app.include_router(network, dependencies=[Depends(verify_api_key)])
     app.include_router(scenarios, dependencies=[Depends(verify_api_key)])
 
-    templates = Jinja2Templates(directory="templates")
-
-    @app.get("/", response_class=HTMLResponse)
-    async def index(request: Request) -> HTMLResponse:
-        """Serve the main HTML page."""
-        return templates.TemplateResponse(request, "index.html")
+    # SPA fallback — serve built Vue app for all non-API routes
+    app.mount("/", StaticFiles(directory="static/dist", html=True), name="spa")
 
     @app.get("/health")
     async def health(request: Request) -> dict:
