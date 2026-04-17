@@ -5,11 +5,9 @@ from typing import Optional, Dict, Any, List
 
 import structlog
 
-from app.exceptions import HubConnectionError, HubCommandError
+from app.exceptions import HubConnectionError
 from app.services.hub_client import HubClient
 from app.services.sse_manager import sse_manager
-from app.db import async_session
-from app.models.db_models import DeviceAlias
 
 logger = structlog.get_logger(__name__)
 
@@ -21,13 +19,6 @@ class HubService:
         self._client = HubClient()
         self._client.set_on_message(self._on_hub_message)
         self._devices: List[Dict[str, Any]] = []
-
-    async def _resolve_name(self, ieee: str, fallback: str) -> str:
-        async with async_session() as session:
-            alias = await session.get(DeviceAlias, ieee)
-            if alias:
-                return alias.name
-        return fallback
 
     def is_connected(self) -> bool:
         return self._client.is_connected()

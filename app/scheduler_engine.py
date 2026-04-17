@@ -206,7 +206,7 @@ async def evaluate_device_event(event_data: dict) -> None:
         from sqlalchemy import select
         result = await session.execute(
             select(Scenario).where(
-                Scenario.is_enabled == True,
+                Scenario.is_enabled.is_(True),
                 Scenario.trigger_type == "device_event",
             )
         )
@@ -245,7 +245,7 @@ async def load_scheduler_jobs() -> None:
         from sqlalchemy import select
         result = await session.execute(
             select(Scenario).where(
-                Scenario.is_enabled == True,
+                Scenario.is_enabled.is_(True),
                 Scenario.trigger_type == "schedule",
             )
         )

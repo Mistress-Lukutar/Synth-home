@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI, Request
@@ -43,10 +44,23 @@ def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     settings_obj = get_settings()
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        start_scheduler()
+        await load_scheduler_jobs()
+        yield
+        stop_scheduler()
+        service = get_hub_service()
+        if service.is_connected():
+            await service.disconnect()
+
     app = FastAPI(
         title="ZigbeeHUB WebUI",
         description="Web interface for ZigbeeHUB over USB Serial",
         version="0.1.0",
+        lifespan=lifespan,
     )
 
     app.add_middleware(
@@ -100,20 +114,6 @@ def create_app() -> FastAPI:
                 "Connection": "keep-alive",
             },
         )
-
-    @app.on_event("startup")
-    async def on_startup() -> None:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        start_scheduler()
-        await load_scheduler_jobs()
-
-    @app.on_event("shutdown")
-    async def on_shutdown() -> None:
-        stop_scheduler()
-        service = get_hub_service()
-        if service.is_connected():
-            await service.disconnect()
 
     logger.info("fastapi_application_created")
     return app

@@ -5,13 +5,13 @@ import asyncio
 import serial.tools.list_ports
 from fastapi import APIRouter, Depends
 
-from app.models.schemas import ConnectRequest, StatusResponse
+from app.models.schemas import ConnectRequest, ConnectionStatusResponse, PortsResponse, StatusResponse
 from app.services.hub_service import HubService, get_hub_service
 
 router = APIRouter()
 
 
-@router.get("/api/ports")
+@router.get("/api/ports", response_model=PortsResponse)
 async def list_ports() -> dict:
     """List available COM ports."""
     ports = await asyncio.to_thread(
@@ -41,7 +41,7 @@ async def disconnect_port(
     return StatusResponse(success=True)
 
 
-@router.get("/api/status")
+@router.get("/api/status", response_model=ConnectionStatusResponse)
 async def get_status(
     service: HubService = Depends(get_hub_service),
 ) -> dict:

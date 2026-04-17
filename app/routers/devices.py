@@ -3,14 +3,12 @@
 from typing import Annotated, List
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import require_connection
 from app.db import async_session
 from app.models.db_models import DeviceAlias
-from app.models.schemas import CommandRequest, StatusResponse
+from app.models.schemas import CommandRequest, DevicesResponse, RenameRequest, RenameResponse, StatusResponse
 from app.services.hub_service import HubService
 
 router = APIRouter()
@@ -32,7 +30,7 @@ async def _apply_aliases(devices: List[dict]) -> List[dict]:
     return devices
 
 
-@router.get("/api/devices")
+@router.get("/api/devices", response_model=DevicesResponse)
 async def list_devices(
     service: Annotated[HubService, Depends(require_connection)],
 ) -> dict:
@@ -53,11 +51,7 @@ async def device_command(
     return StatusResponse(success=True, data=result)
 
 
-class RenameRequest(BaseModel):
-    name: str = Field(..., min_length=1)
-
-
-@router.patch("/api/devices/{ieee}/rename")
+@router.patch("/api/devices/{ieee}/rename", response_model=RenameResponse)
 async def rename_device(
     ieee: str,
     req: RenameRequest,

@@ -2,6 +2,9 @@
 let isConnected = false;
 let currentPort = null;
 let evtSource = null;
+let sseReconnectTimer = null;
+let sseReconnectDelay = 1000;
+let titleEditTimeout = null;
 let lastDevices = [];
 
 
@@ -124,6 +127,9 @@ function showStatus(text, type) {
 function startSSE() {
     if (evtSource) evtSource.close();
     evtSource = new EventSource('/events');
+    evtSource.onopen = () => {
+        sseReconnectDelay = 1000;
+    };
     evtSource.onmessage = (e) => {
         try {
             const msg = JSON.parse(e.data);
@@ -134,14 +140,28 @@ function startSSE() {
     };
     evtSource.onerror = () => {
         logEvent('SSE error / disconnected');
+        evtSource.close();
+        evtSource = null;
+        if (!sseReconnectTimer && isConnected) {
+            sseReconnectTimer = setTimeout(() => {
+                sseReconnectTimer = null;
+                startSSE();
+            }, sseReconnectDelay);
+            sseReconnectDelay = Math.min(sseReconnectDelay * 2, 30000);
+        }
     };
 }
 
 function stopSSE() {
+    if (sseReconnectTimer) {
+        clearTimeout(sseReconnectTimer);
+        sseReconnectTimer = null;
+    }
     if (evtSource) {
         evtSource.close();
         evtSource = null;
     }
+    sseReconnectDelay = 1000;
 }
 
 function handleSSEMessage(msg) {
@@ -385,7 +405,10 @@ async function submitScenario() {
 
     let trigger_config = null;
     if (trigger_config_raw) {
-        try { trigger_config = JSON.parse(trigger_config_raw); } catch (e) { trigger_config = trigger_config_raw; }
+        try { trigger_config = JSON.parse(trigger_config_raw); } catch (e) {
+            alert('Trigger Config must be valid JSON or empty');
+            return;
+        }
     }
 
     let schedule_days = null;
@@ -468,15 +491,20 @@ function startEditTitle(container) {
 function handleTitleKey(e, input) {
     if (e.key === 'Enter') {
         e.preventDefault();
+        if (titleEditTimeout) { clearTimeout(titleEditTimeout); titleEditTimeout = null; }
         saveTitleEdit(input);
     } else if (e.key === 'Escape') {
+        if (titleEditTimeout) { clearTimeout(titleEditTimeout); titleEditTimeout = null; }
         cancelTitleEdit(input);
     }
 }
 
 function handleTitleBlur(input) {
     // Delay slightly to allow click-outside handling if needed
-    setTimeout(() => saveTitleEdit(input), 100);
+    titleEditTimeout = setTimeout(() => {
+        titleEditTimeout = null;
+        saveTitleEdit(input);
+    }, 100);
 }
 
 function cancelTitleEdit(input) {
@@ -583,5 +611,5 @@ async function restoreConnection() {
 // Initialization
 (async function init() {
     await refreshPorts();
-    restoreConnection();
+    await restoreConnection();
 })();

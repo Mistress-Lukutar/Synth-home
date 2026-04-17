@@ -2,13 +2,14 @@
 
 from typing import Annotated, List
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import async_session
 from app.models.db_models import Scenario
+from app.models.schemas import StatusResponse
 from app.scheduler_engine import (
     update_scenario_job,
     remove_scenario_job,
@@ -59,8 +60,7 @@ class ScenarioOut(BaseModel):
     schedule_hour: int | None
     schedule_minute: int | None
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 @router.get("/api/scenarios", response_model=List[ScenarioOut])
@@ -101,7 +101,7 @@ async def update_scenario(
 ) -> Scenario:
     scenario = await db.get(Scenario, scenario_id)
     if not scenario:
-        raise Exception("Scenario not found")
+        raise HTTPException(status_code=404, detail="Scenario not found")
     for key, value in req.model_dump(exclude_unset=True).items():
         setattr(scenario, key, value)
     await db.commit()
@@ -112,26 +112,26 @@ async def update_scenario(
     return scenario
 
 
-@router.delete("/api/scenarios/{scenario_id}")
+@router.delete("/api/scenarios/{scenario_id}", response_model=StatusResponse)
 async def delete_scenario(
     scenario_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> dict:
+) -> StatusResponse:
     scenario = await db.get(Scenario, scenario_id)
     if scenario:
         await db.delete(scenario)
         await db.commit()
     remove_scenario_job(scenario_id)
-    return {"success": True}
+    return StatusResponse(success=True)
 
 
-@router.post("/api/scenarios/{scenario_id}/trigger")
+@router.post("/api/scenarios/{scenario_id}/trigger", response_model=StatusResponse)
 async def trigger_scenario(
     scenario_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> dict:
+) -> StatusResponse:
     scenario = await db.get(Scenario, scenario_id)
     if not scenario:
-        return {"success": False, "error": "Scenario not found"}
+        raise HTTPException(status_code=404, detail="Scenario not found")
     await _execute_scenario(scenario.id)
-    return {"success": True}
+    return StatusResponse(success=True)

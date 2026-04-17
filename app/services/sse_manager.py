@@ -38,7 +38,7 @@ class SSEManager:
             except asyncio.QueueFull:
                 dropped += 1
         if dropped:
-            logger.warning("sse_broadcast_dropped_messages", dropped=dropped, event=event_type)
+            logger.warning("sse_broadcast_dropped_messages", dropped=dropped, event_type=event_type)
 
 
 sse_manager = SSEManager()
