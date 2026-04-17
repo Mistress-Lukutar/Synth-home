@@ -78,12 +78,7 @@ class ScenarioService:
                 await self._run_action(session, scenario)
 
     def _match_event(self, scenario: Scenario, event_data: dict) -> bool:
-        config = {}
-        if scenario.trigger_config:
-            try:
-                config = json.loads(scenario.trigger_config)
-            except Exception:
-                return False
+        config = scenario.trigger_data or {}
         evt = event_data.get("evt") or event_data.get("event")
         if config.get("event") and config.get("event") != evt:
             return False
@@ -107,12 +102,7 @@ class ScenarioService:
             )
             return
 
-        config = {}
-        if scenario.action_config:
-            try:
-                config = json.loads(scenario.action_config)
-            except Exception:
-                pass
+        config = scenario.action_data or {}
 
         if scenario.action_type == "command":
             ieee = config.get("ieee", "")
