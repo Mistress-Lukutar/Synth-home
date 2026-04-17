@@ -529,6 +529,7 @@ async function saveTitleEdit(input) {
     }
     // Optimistically update UI
     const textSpan = container.querySelector('.title-text');
+    const oldName = input.dataset.original;
     if (textSpan) textSpan.textContent = newName;
     input.dataset.original = newName;
 
@@ -545,10 +546,12 @@ async function saveTitleEdit(input) {
                 await loadDevices();
             } else {
                 // Revert on failure
-                if (textSpan) textSpan.textContent = input.dataset.original;
+                if (textSpan) textSpan.textContent = oldName;
+                input.dataset.original = oldName;
             }
         } catch (e) {
-            if (textSpan) textSpan.textContent = input.dataset.original;
+            if (textSpan) textSpan.textContent = oldName;
+            input.dataset.original = oldName;
         }
     } else if (type === 'scenario') {
         const id = input.dataset.id;
@@ -561,10 +564,12 @@ async function saveTitleEdit(input) {
             if (res.ok) {
                 await loadScenarios();
             } else {
-                if (textSpan) textSpan.textContent = input.dataset.original;
+                if (textSpan) textSpan.textContent = oldName;
+                input.dataset.original = oldName;
             }
         } catch (e) {
-            if (textSpan) textSpan.textContent = input.dataset.original;
+            if (textSpan) textSpan.textContent = oldName;
+            input.dataset.original = oldName;
         }
     }
 }
