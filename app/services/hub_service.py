@@ -124,8 +124,11 @@ class HubService:
         async with async_session() as session:
             repo = DeviceRepository(session)
             for d in devices:
+                ieee = d.get("ieee_addr") or d.get("ieee", "")
+                if not ieee:
+                    continue
                 await repo.upsert(
-                    d["ieee"],
+                    ieee,
                     network_addr=d.get("network_addr"),
                     endpoint=d.get("endpoint"),
                     supports_hs=d.get("supports_hs", False),
