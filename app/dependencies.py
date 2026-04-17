@@ -4,7 +4,6 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException
 
-from app.exceptions import HubConnectionError
 from app.services.hub_service import HubService, get_hub_service
 
 

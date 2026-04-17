@@ -1,6 +1,6 @@
 """Pydantic request/response models for the ZigbeeHUB WebUI."""
 
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -17,11 +17,35 @@ class PermitJoinRequest(BaseModel):
     duration: int = Field(default=180, ge=1, le=255, description="Permit join duration in seconds")
 
 
+class RenameRequest(BaseModel):
+    name: str = Field(..., min_length=1)
+
+
 class DeviceResponse(BaseModel):
     ieee: str
     name: Optional[str] = None
     endpoint: Optional[int] = None
     online: bool = True
+
+
+class PortsResponse(BaseModel):
+    ports: List[str]
+
+
+class ConnectionStatusResponse(BaseModel):
+    connected: bool
+    port: Optional[str] = None
+
+
+class DevicesResponse(BaseModel):
+    success: bool
+    devices: List[DeviceResponse]
+
+
+class RenameResponse(BaseModel):
+    success: bool
+    ieee: str
+    name: str
 
 
 class StatusResponse(BaseModel):
