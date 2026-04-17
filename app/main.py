@@ -139,9 +139,6 @@ def create_app() -> FastAPI:
     app.include_router(network, dependencies=[Depends(verify_api_key)])
     app.include_router(scenarios, dependencies=[Depends(verify_api_key)])
 
-    # SPA fallback — serve built Vue app for all non-API routes
-    app.mount("/", StaticFiles(directory="static/dist", html=True), name="spa")
-
     @app.get("/health")
     async def health(request: Request) -> dict:
         """Health check endpoint for monitoring."""
@@ -187,6 +184,9 @@ def create_app() -> FastAPI:
                 "Connection": "keep-alive",
             },
         )
+
+    # SPA fallback — serve built Vue app for all non-API routes
+    app.mount("/", StaticFiles(directory="static/dist", html=True), name="spa")
 
     logger.info("fastapi_application_created")
     return app
