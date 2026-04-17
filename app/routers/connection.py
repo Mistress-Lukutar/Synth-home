@@ -6,7 +6,8 @@ import serial.tools.list_ports
 from fastapi import APIRouter, Depends
 
 from app.models.schemas import ConnectRequest, ConnectionStatusResponse, PortsResponse, StatusResponse
-from app.services.hub_service import HubService, get_hub_service
+from app.dependencies import get_hub_service
+from app.services.hub_service import HubService
 
 router = APIRouter()
 

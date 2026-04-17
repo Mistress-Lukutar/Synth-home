@@ -4,24 +4,19 @@ from typing import Annotated, List
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import async_session
+from app.dependencies import get_db, get_scenario_service
 from app.models.db_models import Scenario
 from app.models.schemas import StatusResponse
+from app.repositories.scenario import ScenarioRepository
 from app.scheduler_engine import (
     update_scenario_job,
     remove_scenario_job,
-    _execute_scenario,
 )
+from app.services.scenario_service import ScenarioService
 
 router = APIRouter()
-
-
-async def get_db() -> AsyncSession:
-    async with async_session() as session:
-        yield session
 
 
 class ScenarioCreate(BaseModel):
@@ -65,8 +60,8 @@ class ScenarioOut(BaseModel):
 
 @router.get("/api/scenarios", response_model=List[ScenarioOut])
 async def list_scenarios(db: Annotated[AsyncSession, Depends(get_db)]) -> List[Scenario]:
-    result = await db.execute(select(Scenario).order_by(Scenario.id.desc()))
-    return list(result.scalars().all())
+    repo = ScenarioRepository(db)
+    return await repo.list_ordered()
 
 
 @router.post("/api/scenarios", response_model=ScenarioOut)
@@ -128,10 +123,7 @@ async def delete_scenario(
 @router.post("/api/scenarios/{scenario_id}/trigger", response_model=StatusResponse)
 async def trigger_scenario(
     scenario_id: int,
-    db: Annotated[AsyncSession, Depends(get_db)],
+    service: Annotated[ScenarioService, Depends(get_scenario_service)],
 ) -> StatusResponse:
-    scenario = await db.get(Scenario, scenario_id)
-    if not scenario:
-        raise HTTPException(status_code=404, detail="Scenario not found")
-    await _execute_scenario(scenario.id)
+    await service.execute(scenario_id)
     return StatusResponse(success=True)

@@ -7,18 +7,28 @@ import structlog
 
 from app.exceptions import HubConnectionError
 from app.services.hub_client import HubClient
-from app.services.sse_manager import sse_manager
+from app.services.protocol import ProtocolHandler
+from app.services.event_bus import EventBus
 
 logger = structlog.get_logger(__name__)
 
 
 class HubService:
-    """Async business-logic wrapper for hub communication."""
+    """Async business-logic wrapper for hub communication.
 
-    def __init__(self) -> None:
-        self._client = HubClient()
+    Not a singleton — instantiated per application lifespan or test fixture.
+    """
+
+    def __init__(
+        self,
+        event_bus: EventBus,
+        client: Optional[HubClient] = None,
+    ) -> None:
+        self._event_bus = event_bus
+        self._client = client or HubClient(ProtocolHandler())
         self._client.set_on_message(self._on_hub_message)
         self._devices: List[Dict[str, Any]] = []
+        self._bg_tasks: set[asyncio.Task] = set()
 
     def is_connected(self) -> bool:
         return self._client.is_connected()
@@ -32,19 +42,19 @@ class HubService:
         ok = await self._client.connect(port)
         if ok:
             logger.info("hub_connected", port=port)
-            await sse_manager.broadcast("connected", {"port": port})
-            # Request device list after connect (background)
-            asyncio.create_task(self.fetch_devices())
+            await self._event_bus.publish("hub_connected", {"port": port})
+            self._spawn_background(self.fetch_devices())
         else:
             logger.warning("hub_connect_failed", port=port)
         return ok
 
     async def disconnect(self) -> None:
-        """Disconnect from the hub."""
+        """Disconnect from the hub and cancel background tasks."""
         if self.is_connected():
             logger.info("disconnecting_from_hub")
+        await self._cancel_background_tasks()
         await self._client.disconnect()
-        await sse_manager.broadcast("disconnected", {})
+        await self._event_bus.publish("hub_disconnected", {})
 
     async def send_command(
         self, ieee: str, action: str, params: Optional[Dict[str, Any]] = None
@@ -93,39 +103,29 @@ class HubService:
                     }
                 )
             self._devices = mapped
-        # Evaluate device_event scenarios
+
+        # Publish domain events for downstream consumers (scheduler, SSE, etc.)
         if evt in ("device_joined", "device_left", "state_change", "command_failed"):
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = asyncio.get_event_loop()
-            from app.scheduler_engine import evaluate_device_event
-            loop.create_task(evaluate_device_event(data))
-        # Broadcast raw message to SSE clients
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.get_event_loop()
-        loop.create_task(sse_manager.broadcast("hub_message", {"data": data}))
+            self._spawn_background(
+                self._event_bus.publish("device_event", {"event": evt, "data": data})
+            )
 
+        self._spawn_background(
+            self._event_bus.publish("hub_message", {"data": data})
+        )
 
-_hub_service_instance: Optional[HubService] = None
+    def _spawn_background(self, coro: asyncio.coroutines) -> None:
+        """Spawn a background task and keep a weak reference for cleanup."""
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
-
-def get_hub_service() -> HubService:
-    global _hub_service_instance
-    if _hub_service_instance is None:
-        _hub_service_instance = HubService()
-    return _hub_service_instance
-
-
-def set_hub_service(service: HubService) -> None:
-    """Override the global singleton instance (useful for tests)."""
-    global _hub_service_instance
-    _hub_service_instance = service
-
-
-def reset_hub_service() -> None:
-    """Reset the global singleton instance (useful for tests)."""
-    global _hub_service_instance
-    _hub_service_instance = None
+    async def _cancel_background_tasks(self) -> None:
+        """Cancel any outstanding background tasks."""
+        if not self._bg_tasks:
+            return
+        for task in self._bg_tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*self._bg_tasks, return_exceptions=True)
+        self._bg_tasks.clear()

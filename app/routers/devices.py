@@ -3,27 +3,21 @@
 from typing import Annotated, List
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import require_connection
-from app.db import async_session
-from app.models.db_models import DeviceAlias
+from app.dependencies import require_connection, get_db
 from app.models.schemas import CommandRequest, DevicesResponse, RenameRequest, RenameResponse, StatusResponse
+from app.repositories.device_alias import DeviceAliasRepository
 from app.services.hub_service import HubService
 
 router = APIRouter()
 
 
-async def _apply_aliases(devices: List[dict]) -> List[dict]:
+async def _apply_aliases(devices: List[dict], db: AsyncSession) -> List[dict]:
     if not devices:
         return devices
-    async with async_session() as session:
-        result = await session.execute(
-            select(DeviceAlias).where(
-                DeviceAlias.ieee_addr.in_([d["ieee"] for d in devices])
-            )
-        )
-        aliases = {a.ieee_addr: a.name for a in result.scalars().all()}
+    repo = DeviceAliasRepository(db)
+    aliases = await repo.get_many_by_ieee([d["ieee"] for d in devices])
     for d in devices:
         if d["ieee"] in aliases:
             d["name"] = aliases[d["ieee"]]
@@ -33,10 +27,11 @@ async def _apply_aliases(devices: List[dict]) -> List[dict]:
 @router.get("/api/devices", response_model=DevicesResponse)
 async def list_devices(
     service: Annotated[HubService, Depends(require_connection)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Fetch and return the list of Zigbee devices."""
     devices = await service.fetch_devices()
-    devices = await _apply_aliases(devices)
+    devices = await _apply_aliases(devices, db)
     return {"success": True, "devices": devices}
 
 
@@ -55,13 +50,9 @@ async def device_command(
 async def rename_device(
     ieee: str,
     req: RenameRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    async with async_session() as session:
-        alias = await session.get(DeviceAlias, ieee)
-        if alias:
-            alias.name = req.name
-        else:
-            alias = DeviceAlias(ieee_addr=ieee, name=req.name)
-            session.add(alias)
-        await session.commit()
+    repo = DeviceAliasRepository(db)
+    await repo.upsert(ieee, req.name)
+    await db.commit()
     return {"success": True, "ieee": ieee, "name": req.name}
