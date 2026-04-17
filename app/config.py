@@ -12,8 +12,9 @@ class Settings(BaseSettings):
     port: int = 8080
     host: str = "127.0.0.1"
     log_level: str = "INFO"
-    cors_origins: list[str] = ["*"]
+    cors_origins: list[str] = []
     auto_connect_port: Optional[str] = None
+    api_key: Optional[str] = None
 
 
 @lru_cache

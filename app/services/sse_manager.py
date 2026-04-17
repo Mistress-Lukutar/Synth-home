@@ -16,6 +16,7 @@ class SSEManager:
     def __init__(self, max_queue_size: int = _MAX_QUEUE_SIZE) -> None:
         self._queues: List[asyncio.Queue[Dict[str, Any]]] = []
         self._max_queue_size = max_queue_size
+        self._lock = asyncio.Lock()
 
     def subscribe(self) -> asyncio.Queue[Dict[str, Any]]:
         """Create and register a new queue for an SSE consumer."""
@@ -32,7 +33,9 @@ class SSEManager:
         """Enqueue an event to all active consumers (non-blocking)."""
         message = {"type": event_type, **payload}
         dropped = 0
-        for q in self._queues:
+        async with self._lock:
+            queues = list(self._queues)
+        for q in queues:
             try:
                 q.put_nowait(message)
             except asyncio.QueueFull:

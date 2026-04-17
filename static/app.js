@@ -240,11 +240,11 @@ function renderDevices(devices) {
                     <div class="editable-title">
                         <span class="title-text" onclick="startEditTitle(this.parentElement)">${escapeHtml(d.name || 'Unknown Device')}</span>
                         <svg class="edit-icon" onclick="startEditTitle(this.parentElement)" viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
-                        <input type="text" class="title-input" value="${escapeHtml(d.name || 'Unknown Device')}" data-type="device" data-ieee="${d.ieee}" data-original="${escapeHtml(d.name || 'Unknown Device')}" onkeydown="handleTitleKey(event, this)" onblur="handleTitleBlur(this)">
+                        <input type="text" class="title-input" value="${escapeHtml(d.name || 'Unknown Device')}" data-type="device" data-ieee="${escapeHtml(d.ieee)}" data-original="${escapeHtml(d.name || 'Unknown Device')}" onkeydown="handleTitleKey(event, this)" onblur="handleTitleBlur(this)">
                     </div>
                     <div class="device-details">
                         <span class="device-ieee">${escapeHtml(d.ieee)}</span>
-                        <span>EP ${d.endpoint || '-'}</span>
+                        <span>EP ${escapeHtml(String(d.endpoint || '-'))}</span>
                         <span class="${onlineClass}">${onlineText}</span>
                     </div>
                 </div>
