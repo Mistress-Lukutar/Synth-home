@@ -363,8 +363,8 @@ function renderScenarios(scenarios) {
         const enabledClass = s.is_enabled ? 'device-online' : 'device-offline';
         const enabledText = s.is_enabled ? 'Enabled' : 'Disabled';
         let details = `Trigger: ${escapeHtml(s.trigger_type)}`;
-        if (s.trigger_type === 'schedule' && s.schedule_days) {
-            details += ` · ${escapeHtml(s.schedule_days)} ${String(s.schedule_hour||0).padStart(2,'0')}:${String(s.schedule_minute||0).padStart(2,'0')}`;
+        if (s.trigger_type === 'schedule' && s.trigger_data && s.trigger_data.days) {
+            details += ` · ${escapeHtml(s.trigger_data.days)} ${String(s.trigger_data.hour||0).padStart(2,'0')}:${String(s.trigger_data.minute||0).padStart(2,'0')}`;
         }
         details += ` · Action: ${escapeHtml(s.action_type)}`;
         return `
@@ -405,44 +405,38 @@ async function submitScenario() {
         return;
     }
 
-    let action_config = { ieee: device_ieee, action, params: {} };
+    let action_data = { ieee: device_ieee, action, params: {} };
     if (paramsRaw) {
         try {
-            action_config.params = JSON.parse(paramsRaw);
+            action_data.params = JSON.parse(paramsRaw);
         } catch (e) {
             alert('Params must be valid JSON or empty');
             return;
         }
     }
 
-    let trigger_config = null;
-    if (trigger_config_raw) {
-        try { trigger_config = JSON.parse(trigger_config_raw); } catch (e) {
+    let trigger_data = {};
+    if (trigger_type === 'schedule') {
+        trigger_data.days = Array.from(document.querySelectorAll('.sc-day:checked')).map(cb => cb.value).join(',');
+        const timeValue = document.getElementById('scTime').value || '00:00';
+        const [h, m] = timeValue.split(':');
+        trigger_data.hour = parseInt(h, 10);
+        trigger_data.minute = parseInt(m, 10);
+    } else if (trigger_type === 'device_event' && trigger_config_raw) {
+        try {
+            trigger_data = JSON.parse(trigger_config_raw);
+        } catch (e) {
             alert('Trigger Config must be valid JSON or empty');
             return;
         }
     }
 
-    let schedule_days = null;
-    let schedule_hour = null;
-    let schedule_minute = null;
-    if (trigger_type === 'schedule') {
-        schedule_days = Array.from(document.querySelectorAll('.sc-day:checked')).map(cb => cb.value).join(',');
-        const timeValue = document.getElementById('scTime').value || '00:00';
-        const [h, m] = timeValue.split(':');
-        schedule_hour = parseInt(h, 10);
-        schedule_minute = parseInt(m, 10);
-    }
-
     const payload = {
         name,
         trigger_type,
-        trigger_config: trigger_config ? JSON.stringify(trigger_config) : null,
+        trigger_data: Object.keys(trigger_data).length ? trigger_data : null,
         action_type,
-        action_config: JSON.stringify(action_config),
-        schedule_days,
-        schedule_hour,
-        schedule_minute,
+        action_data,
         is_enabled
     };
 

@@ -68,11 +68,40 @@ def update_scenario_job(scenario) -> None:
         pass
     if not scenario.is_enabled:
         return
-    if scenario.trigger_type == "schedule" and scenario.schedule_days is not None:
-        day_of_week = _day_of_week_map(scenario.schedule_days)
+    if scenario.trigger_type != "schedule":
+        return
+
+    trigger_data = scenario.trigger_data or {}
+    # Support explicit cron expression
+    cron = trigger_data.get("cron")
+    if cron:
+        try:
+            parts = cron.split()
+            trigger = CronTrigger(
+                minute=parts[0],
+                hour=parts[1],
+                day=parts[2],
+                month=parts[3],
+                day_of_week=parts[4],
+            )
+            s.add_job(
+                _execute_scenario_wrapper,
+                trigger=trigger,
+                id=job_id,
+                args=[scenario.id],
+                replace_existing=True,
+            )
+        except Exception:
+            pass
+        return
+
+    # Support structured schedule fields
+    days = trigger_data.get("days")
+    if days is not None:
+        day_of_week = _day_of_week_map(days)
         trigger = CronTrigger(
-            hour=scenario.schedule_hour or 0,
-            minute=scenario.schedule_minute or 0,
+            hour=trigger_data.get("hour") or 0,
+            minute=trigger_data.get("minute") or 0,
             day_of_week=day_of_week,
         )
         s.add_job(
@@ -82,28 +111,6 @@ def update_scenario_job(scenario) -> None:
             args=[scenario.id],
             replace_existing=True,
         )
-    elif scenario.trigger_type == "schedule" and scenario.trigger_config:
-        try:
-            cfg = json.loads(scenario.trigger_config)
-            cron = cfg.get("cron")
-            if cron:
-                parts = cron.split()
-                trigger = CronTrigger(
-                    minute=parts[0],
-                    hour=parts[1],
-                    day=parts[2],
-                    month=parts[3],
-                    day_of_week=parts[4],
-                )
-                s.add_job(
-                    _execute_scenario_wrapper,
-                    trigger=trigger,
-                    id=job_id,
-                    args=[scenario.id],
-                    replace_existing=True,
-                )
-        except Exception:
-            pass
 
 
 def remove_scenario_job(scenario_id: int) -> None:

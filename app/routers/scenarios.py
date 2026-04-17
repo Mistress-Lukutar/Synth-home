@@ -23,24 +23,18 @@ router = APIRouter()
 class ScenarioCreate(BaseModel):
     name: str = Field(..., min_length=1)
     trigger_type: str = Field(default="manual")
-    trigger_config: str | None = None
+    trigger_data: dict | None = None
     action_type: str = Field(default="command")
-    action_config: str | None = None
-    schedule_days: str | None = None
-    schedule_hour: int | None = Field(default=None, ge=0, le=23)
-    schedule_minute: int | None = Field(default=None, ge=0, le=59)
+    action_data: dict | None = None
     is_enabled: bool = True
 
 
 class ScenarioUpdate(BaseModel):
     name: str | None = None
     trigger_type: str | None = None
-    trigger_config: str | None = None
+    trigger_data: dict | None = None
     action_type: str | None = None
-    action_config: str | None = None
-    schedule_days: str | None = None
-    schedule_hour: int | None = Field(default=None, ge=0, le=23)
-    schedule_minute: int | None = Field(default=None, ge=0, le=59)
+    action_data: dict | None = None
     is_enabled: bool | None = None
 
 
@@ -49,12 +43,9 @@ class ScenarioOut(BaseModel):
     name: str
     is_enabled: bool
     trigger_type: str
-    trigger_config: str | None
+    trigger_data: dict | None
     action_type: str
-    action_config: str | None
-    schedule_days: str | None
-    schedule_hour: int | None
-    schedule_minute: int | None
+    action_data: dict | None
 
     model_config = {"from_attributes": True}
 
@@ -73,12 +64,9 @@ async def create_scenario(
     scenario = Scenario(
         name=req.name,
         trigger_type=req.trigger_type,
-        trigger_config=req.trigger_config,
+        trigger_data=req.trigger_data,
         action_type=req.action_type,
-        action_config=req.action_config,
-        schedule_days=req.schedule_days,
-        schedule_hour=req.schedule_hour,
-        schedule_minute=req.schedule_minute,
+        action_data=req.action_data,
         is_enabled=req.is_enabled,
     )
     db.add(scenario)
