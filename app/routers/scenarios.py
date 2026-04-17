@@ -1,5 +1,6 @@
 """Scenario router: CRUD and manual trigger for rule-based scenarios."""
 
+import asyncio
 from typing import Annotated, List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -84,7 +85,7 @@ async def create_scenario(
     await db.commit()
     await db.refresh(scenario)
     if scenario.is_enabled and scenario.trigger_type == "schedule":
-        update_scenario_job(scenario)
+        await asyncio.to_thread(update_scenario_job, scenario)
     return scenario
 
 
@@ -101,9 +102,9 @@ async def update_scenario(
         setattr(scenario, key, value)
     await db.commit()
     await db.refresh(scenario)
-    remove_scenario_job(scenario.id)
+    await asyncio.to_thread(remove_scenario_job, scenario.id)
     if scenario.is_enabled and scenario.trigger_type == "schedule":
-        update_scenario_job(scenario)
+        await asyncio.to_thread(update_scenario_job, scenario)
     return scenario
 
 
@@ -116,7 +117,7 @@ async def delete_scenario(
     if scenario:
         await db.delete(scenario)
         await db.commit()
-    remove_scenario_job(scenario_id)
+    await asyncio.to_thread(remove_scenario_job, scenario_id)
     return StatusResponse(success=True)
 
 

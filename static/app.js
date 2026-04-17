@@ -56,8 +56,10 @@ async function connectPort() {
 async function disconnectPort() {
     try {
         await fetch('/api/disconnect', { method: 'POST' });
-    } catch (e) {}
-    onDisconnected();
+    } catch (e) {
+    } finally {
+        onDisconnected();
+    }
 }
 
 function onConnected(port) {
@@ -398,9 +400,19 @@ async function submitScenario() {
     const trigger_config_raw = document.getElementById('scTriggerConfig').value.trim();
     const is_enabled = document.getElementById('scEnabled').checked;
 
+    if (!device_ieee) {
+        alert('Select a target device');
+        return;
+    }
+
     let action_config = { ieee: device_ieee, action, params: {} };
     if (paramsRaw) {
-        try { action_config.params = JSON.parse(paramsRaw); } catch (e) {}
+        try {
+            action_config.params = JSON.parse(paramsRaw);
+        } catch (e) {
+            alert('Params must be valid JSON or empty');
+            return;
+        }
     }
 
     let trigger_config = null;
