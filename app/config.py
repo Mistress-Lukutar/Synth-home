@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env")
 
     port: int = 8080
-    host: str = "127.0.0.1"
+    host: str = "0.0.0.0"
     log_level: str = "INFO"
     cors_origins: list[str] = []
     auto_connect_port: Optional[str] = None
