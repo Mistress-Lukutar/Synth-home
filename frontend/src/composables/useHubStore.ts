@@ -32,6 +32,7 @@ interface State {
   sseReconnectDelay: number
   evtSource: EventSource | null
   sseReconnectTimer: ReturnType<typeof setTimeout> | null
+  refreshingDevices: boolean
 }
 
 const state = reactive<State>({
@@ -43,6 +44,7 @@ const state = reactive<State>({
   sseReconnectDelay: 1000,
   evtSource: null,
   sseReconnectTimer: null,
+  refreshingDevices: false,
 })
 
 function logEvent(text: string) {
@@ -59,8 +61,10 @@ function handleSSEMessage(msg: any) {
   } else if (msg.type === 'hub_message') {
     const data = msg.data || {}
     const evt = data.evt || data.event || 'message'
-    logEvent(`Hub: ${evt}`)
-    if (['device_list', 'device_joined', 'device_left', 'state_change'].includes(evt)) {
+    if (evt !== 'device_list') {
+      logEvent(`Hub: ${evt}`)
+    }
+    if (['device_joined', 'device_left', 'state_change'].includes(evt)) {
       refreshDevices()
     }
   } else if (msg.type === 'scenario_triggered') {
@@ -156,7 +160,8 @@ async function disconnect() {
 }
 
 async function refreshDevices() {
-  if (!state.isConnected) return
+  if (!state.isConnected || state.refreshingDevices) return
+  state.refreshingDevices = true
   try {
     const data = await api.listDevices()
     if (data.success) {
@@ -164,6 +169,8 @@ async function refreshDevices() {
     }
   } catch (e: any) {
     logEvent('Load devices error: ' + e.message)
+  } finally {
+    state.refreshingDevices = false
   }
 }
 
