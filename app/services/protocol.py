@@ -1,0 +1,87 @@
+"""Protocol layer: JSON framing and request/response correlation."""
+
+import asyncio
+import json
+from typing import Optional, Dict, Any, Callable
+
+import structlog
+
+logger = structlog.get_logger(__name__)
+
+
+class ProtocolHandler:
+    """Handles newline-delimited JSON framing and correlates responses."""
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._list_future: Optional[asyncio.Future[list]] = None
+        self._on_message: Optional[Callable[[Dict[str, Any]], None]] = None
+        self._fetch_lock = asyncio.Lock()
+
+    def set_on_message(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+        self._on_message = callback
+
+    def feed(self, chunk: bytes) -> list[Dict[str, Any]]:
+        """Feed raw bytes into the parser and return complete messages."""
+        messages: list[Dict[str, Any]] = []
+        self._buffer += chunk.decode("utf-8", errors="ignore")
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                logger.debug("protocol_json_parse_failed", line=line[:200])
+                continue
+            messages.append(data)
+        return messages
+
+    def dispatch(self, messages: list[Dict[str, Any]]) -> None:
+        """Dispatch parsed messages to correlation logic and user callback."""
+        for data in messages:
+            self._handle_single(data)
+
+    def _handle_single(self, data: Dict[str, Any]) -> None:
+        evt = data.get("evt") or data.get("event")
+        if self._list_future is not None and not self._list_future.done():
+            if evt == "device_list":
+                self._list_future.set_result(data.get("devices", []))
+                self._list_future = None
+        if self._on_message is not None:
+            try:
+                self._on_message(data)
+            except Exception:
+                logger.exception("protocol_on_message_failed")
+
+    async def request_device_list(
+        self, send_fn: Callable[[], None]
+    ) -> list[Dict[str, Any]]:
+        """Send a list request and wait for the correlated response."""
+        async with self._fetch_lock:
+            if self._list_future is not None and not self._list_future.done():
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.shield(self._list_future), timeout=3.0
+                    )
+                except asyncio.TimeoutError:
+                    return []
+
+            loop = asyncio.get_running_loop()
+            self._list_future = loop.create_future()
+            send_fn()
+            try:
+                return await asyncio.wait_for(self._list_future, timeout=3.0)
+            except asyncio.TimeoutError:
+                return []
+            finally:
+                if self._list_future is not None and self._list_future.done():
+                    self._list_future = None
+
+    def reset(self) -> None:
+        """Cancel any pending futures (e.g. on disconnect)."""
+        if self._list_future is not None and not self._list_future.done():
+            self._list_future.cancel()
+        self._list_future = None
+        self._buffer = ""

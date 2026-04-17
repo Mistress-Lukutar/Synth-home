@@ -1,4 +1,4 @@
-"""APScheduler-based scheduling engine."""
+"""APScheduler-based scheduling engine — thin orchestration layer."""
 
 import asyncio
 import json
@@ -9,9 +9,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.db import async_session
-from app.models.db_models import Scenario
-from app.services.hub_service import get_hub_service
-from app.services.sse_manager import sse_manager
+from app.repositories.scenario import ScenarioRepository
+from app.services.scenario_service import ScenarioService
 
 logger = structlog.get_logger(__name__)
 
@@ -60,7 +59,7 @@ def _day_of_week_map(days_str: str) -> str:
     return ",".join(valid) if valid else "*"
 
 
-def update_scenario_job(scenario: Scenario) -> None:
+def update_scenario_job(scenario) -> None:
     s = get_scheduler()
     job_id = f"scenario_{scenario.id}"
     try:
@@ -119,136 +118,31 @@ def remove_scenario_job(scenario_id: int) -> None:
 async def _execute_scenario_wrapper(scenario_id: int) -> None:
     try:
         async with asyncio.timeout(30):
-            await _execute_scenario(scenario_id)
+            # scenario_service is injected via a module-level reference set at startup
+            if _scenario_service is None:
+                logger.warning("scenario_service_not_initialized", scenario_id=scenario_id)
+                return
+            await _scenario_service.execute(scenario_id)
     except asyncio.TimeoutError:
         logger.warning("scenario_execution_timeout", scenario_id=scenario_id)
     except Exception:
         logger.exception("scenario_execution_error", scenario_id=scenario_id)
 
 
-def _get_next_run_time(scenario_id: int) -> Optional[str]:
-    job = get_scheduler().get_job(f"scenario_{scenario_id}")
-    if job and job.next_run_time:
-        return job.next_run_time.isoformat()
-    return None
+_scenario_service: Optional[ScenarioService] = None
 
 
-async def _execute_scenario(scenario_id: int) -> None:
-    logger.info("executing_scenario", scenario_id=scenario_id)
-    async with async_session() as session:
-        scenario = await session.get(Scenario, scenario_id)
-        if not scenario or not scenario.is_enabled:
-            return
-        await sse_manager.broadcast(
-            "scenario_triggered",
-            {
-                "scenario_id": scenario.id,
-                "scenario_name": scenario.name,
-                "next_run_time": _get_next_run_time(scenario.id),
-            },
-        )
-        await _run_scenario_action(scenario)
-
-
-async def _run_scenario_action(scenario: Scenario) -> None:
-    service = get_hub_service()
-    if not service.is_connected():
-        logger.warning("scenario_skipped_not_connected", scenario_id=scenario.id)
-        await sse_manager.broadcast(
-            "scenario_skipped",
-            {
-                "scenario_id": scenario.id,
-                "scenario_name": scenario.name,
-                "reason": "not_connected",
-                "next_run_time": _get_next_run_time(scenario.id),
-            },
-        )
-        return
-    config = {}
-    if scenario.action_config:
-        try:
-            config = json.loads(scenario.action_config)
-        except Exception:
-            pass
-    if scenario.action_type == "command":
-        ieee = config.get("ieee", "")
-        action = config.get("action", "toggle")
-        params = config.get("params", {})
-        try:
-            await service.send_command(ieee, action, params if params else None)
-            logger.info("scenario_executed", scenario_id=scenario.id)
-            await sse_manager.broadcast(
-                "scenario_executed",
-                {
-                    "scenario_id": scenario.id,
-                    "scenario_name": scenario.name,
-                    "action": action,
-                    "ieee": ieee,
-                    "next_run_time": _get_next_run_time(scenario.id),
-                },
-            )
-        except Exception as exc:
-            logger.warning("scenario_execution_failed", scenario_id=scenario.id, error=str(exc))
-            await sse_manager.broadcast(
-                "scenario_execution_failed",
-                {
-                    "scenario_id": scenario.id,
-                    "scenario_name": scenario.name,
-                    "error": str(exc),
-                    "next_run_time": _get_next_run_time(scenario.id),
-                },
-            )
-
-
-async def evaluate_device_event(event_data: dict) -> None:
-    """Check scenarios with trigger_type=='device_event' against incoming event."""
-    async with async_session() as session:
-        from sqlalchemy import select
-        result = await session.execute(
-            select(Scenario).where(
-                Scenario.is_enabled.is_(True),
-                Scenario.trigger_type == "device_event",
-            )
-        )
-        scenarios = result.scalars().all()
-        for scenario in scenarios:
-            config = {}
-            if scenario.trigger_config:
-                try:
-                    config = json.loads(scenario.trigger_config)
-                except Exception:
-                    continue
-            evt = event_data.get("evt") or event_data.get("event")
-            if config.get("event") and config.get("event") != evt:
-                continue
-            if config.get("ieee"):
-                event_ieee = event_data.get("ieee") or event_data.get("ieee_addr")
-                if event_ieee != config.get("ieee"):
-                    continue
-            logger.info("scenario_triggered_by_event", scenario_id=scenario.id, event=evt)
-            await sse_manager.broadcast(
-                "scenario_triggered",
-                {
-                    "scenario_id": scenario.id,
-                    "scenario_name": scenario.name,
-                    "event": evt,
-                    "next_run_time": _get_next_run_time(scenario.id),
-                },
-            )
-            await _run_scenario_action(scenario)
+def set_scenario_service(service: ScenarioService) -> None:
+    global _scenario_service
+    _scenario_service = service
 
 
 async def load_scheduler_jobs() -> None:
     """Load enabled schedule-based scenarios from DB on startup."""
     logger.info("loading_scheduler_jobs")
     async with async_session() as session:
-        from sqlalchemy import select
-        result = await session.execute(
-            select(Scenario).where(
-                Scenario.is_enabled.is_(True),
-                Scenario.trigger_type == "schedule",
-            )
-        )
-        for scenario in result.scalars().all():
+        repo = ScenarioRepository(session)
+        scenarios = await repo.get_enabled_schedules()
+        for scenario in scenarios:
             update_scenario_job(scenario)
     logger.info("scheduler_jobs_loaded")

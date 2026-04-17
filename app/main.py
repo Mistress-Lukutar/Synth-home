@@ -15,46 +15,102 @@ from app.config import get_settings
 from app.exceptions import setup_exception_handlers
 from app.routers import connection, devices, network, scenarios
 from app.services import sse_manager
-from app.services.hub_service import get_hub_service
-from app.scheduler_engine import start_scheduler, stop_scheduler, load_scheduler_jobs
+from app.services.event_bus import EventBus
+from app.services.hub_service import HubService
+from app.services.scenario_service import ScenarioService
+from app.scheduler_engine import start_scheduler, stop_scheduler, load_scheduler_jobs, set_scenario_service, get_scheduler
 from app.db import engine, Base
 
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.UnicodeDecoder(),
-        structlog.dev.ConsoleRenderer(),
-    ],
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    wrapper_class=structlog.stdlib.BoundLogger,
-    cache_logger_on_first_use=True,
-)
-
 logger = structlog.get_logger(__name__)
+
+
+def configure_logging(log_level: str) -> None:
+    """Configure structlog and stdlib logging (call once at startup)."""
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.PositionalArgumentsFormatter(),
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.UnicodeDecoder(),
+            structlog.dev.ConsoleRenderer(),
+        ],
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+    import logging
+
+    logging.basicConfig(level=getattr(logging, log_level.upper()))
+
+
+def _sse_bridge(event_type: str, payload: dict) -> None:
+    """Bridge domain events to SSE manager (non-blocking)."""
+    asyncio.create_task(sse_manager.broadcast(event_type, payload))
 
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     settings_obj = get_settings()
+    configure_logging(settings_obj.log_level)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Database schema
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+
+        # Domain event bus
+        event_bus = EventBus()
+        app.state.event_bus = event_bus
+
+        # Hub service (stateful singleton bound to app lifespan)
+        hub_service = HubService(event_bus=event_bus)
+        app.state.hub_service = hub_service
+
+        # Scenario service
+        scenario_service = ScenarioService(
+            event_bus=event_bus,
+            hub_service=hub_service,
+            scheduler=get_scheduler(),
+        )
+        app.state.scenario_service = scenario_service
+        set_scenario_service(scenario_service)
+
+        # Bridge domain events to SSE
+        for evt in (
+            "hub_connected",
+            "hub_disconnected",
+            "hub_message",
+            "scenario_triggered",
+            "scenario_executed",
+            "scenario_execution_failed",
+            "scenario_skipped",
+        ):
+            event_bus.subscribe(evt, lambda p, e=evt: _sse_bridge(e, p))
+
+        # Scheduler
         start_scheduler()
         await load_scheduler_jobs()
+
+        # Auto-connect to configured port if set (inside Uvicorn loop)
+        if settings_obj.auto_connect_port:
+            logger.info("auto_connecting_to_configured_port", port=settings_obj.auto_connect_port)
+            try:
+                await hub_service.connect(settings_obj.auto_connect_port)
+                logger.info("auto_connect_successful", port=settings_obj.auto_connect_port)
+            except Exception as e:
+                logger.warning("auto_connect_failed", error=str(e))
+
         yield
+
+        # Shutdown
         stop_scheduler()
-        service = get_hub_service()
-        if service.is_connected():
-            await service.disconnect()
+        await hub_service.disconnect()
 
     app = FastAPI(
         title="ZigbeeHUB WebUI",
@@ -97,7 +153,6 @@ def create_app() -> FastAPI:
                     try:
                         msg = await asyncio.wait_for(queue.get(), timeout=25.0)
                     except asyncio.TimeoutError:
-                        # Send a heartbeat comment to keep the connection alive
                         yield ": ping\n\n"
                         continue
                     yield f"data: {json.dumps(msg)}\n\n"
@@ -124,19 +179,7 @@ def main() -> None:
     import uvicorn
 
     settings_obj = get_settings()
-    import logging
-
-    logging.basicConfig(level=getattr(logging, settings_obj.log_level.upper()))
-
-    # Auto-connect to configured port if set
-    if settings_obj.auto_connect_port:
-        service = get_hub_service()
-        logger.info("auto_connecting_to_configured_port", port=settings_obj.auto_connect_port)
-        try:
-            asyncio.run(service.connect(settings_obj.auto_connect_port))
-            logger.info("auto_connect_successful", port=settings_obj.auto_connect_port)
-        except Exception as e:
-            logger.warning("auto_connect_failed", error=str(e))
+    configure_logging(settings_obj.log_level)
 
     logger.info("starting_uvicorn_server", host=settings_obj.host, port=settings_obj.port)
     uvicorn.run(
