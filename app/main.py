@@ -5,14 +5,16 @@ import json
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.config import get_settings
+from app.dependencies import verify_api_key
 from app.exceptions import setup_exception_handlers
+from app.middleware.rate_limit import RateLimitMiddleware
 from app.routers import connection, devices, network, scenarios
 from app.services import sse_manager
 from app.services.event_bus import EventBus
@@ -126,14 +128,15 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(RateLimitMiddleware, max_requests=30, window_seconds=60)
 
     app.mount("/static", StaticFiles(directory="static"), name="static")
     setup_exception_handlers(app)
 
-    app.include_router(connection)
-    app.include_router(devices)
-    app.include_router(network)
-    app.include_router(scenarios)
+    app.include_router(connection, dependencies=[Depends(verify_api_key)])
+    app.include_router(devices, dependencies=[Depends(verify_api_key)])
+    app.include_router(network, dependencies=[Depends(verify_api_key)])
+    app.include_router(scenarios, dependencies=[Depends(verify_api_key)])
 
     templates = Jinja2Templates(directory="templates")
 
@@ -142,7 +145,7 @@ def create_app() -> FastAPI:
         """Serve the main HTML page."""
         return templates.TemplateResponse(request, "index.html")
 
-    @app.get("/events")
+    @app.get("/events", dependencies=[Depends(verify_api_key)])
     async def events(request: Request) -> StreamingResponse:
         """Server-Sent Events stream for real-time hub notifications."""
         queue = sse_manager.subscribe()
