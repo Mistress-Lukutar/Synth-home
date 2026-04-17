@@ -123,3 +123,15 @@ def get_hub_service() -> HubService:
     if _hub_service_instance is None:
         _hub_service_instance = HubService()
     return _hub_service_instance
+
+
+def set_hub_service(service: HubService) -> None:
+    """Override the global singleton instance (useful for tests)."""
+    global _hub_service_instance
+    _hub_service_instance = service
+
+
+def reset_hub_service() -> None:
+    """Reset the global singleton instance (useful for tests)."""
+    global _hub_service_instance
+    _hub_service_instance = None
