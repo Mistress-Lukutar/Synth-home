@@ -100,19 +100,13 @@ class HubService:
             except RuntimeError:
                 loop = asyncio.get_event_loop()
             from app.scheduler_engine import evaluate_device_event
-            asyncio.run_coroutine_threadsafe(
-                evaluate_device_event(data),
-                loop,
-            )
+            loop.create_task(evaluate_device_event(data))
         # Broadcast raw message to SSE clients
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = asyncio.get_event_loop()
-        asyncio.run_coroutine_threadsafe(
-            sse_manager.broadcast("hub_message", {"data": data}),
-            loop,
-        )
+        loop.create_task(sse_manager.broadcast("hub_message", {"data": data}))
 
 
 _hub_service_instance: Optional[HubService] = None
