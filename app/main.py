@@ -21,7 +21,6 @@ from app.services.event_bus import EventBus
 from app.services.hub_service import HubService
 from app.services.scenario_service import ScenarioService
 from app.scheduler_engine import start_scheduler, stop_scheduler, load_scheduler_jobs, set_scenario_service, get_scheduler
-from app.db import engine, Base
 
 logger = structlog.get_logger(__name__)
 
@@ -62,10 +61,6 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        # Database schema
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
         # Domain event bus
         event_bus = EventBus()
         app.state.event_bus = event_bus
