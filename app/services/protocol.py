@@ -70,18 +70,29 @@ class ProtocolHandler:
 
             loop = asyncio.get_running_loop()
             self._list_future = loop.create_future()
-            send_fn()
+            try:
+                send_fn()
+            except Exception as exc:
+                if self._list_future is not None and not self._list_future.done():
+                    self._list_future.set_exception(exc)
+                self._list_future = None
+                raise
+
             try:
                 return await asyncio.wait_for(self._list_future, timeout=3.0)
             except asyncio.TimeoutError:
+                if self._list_future is not None and not self._list_future.done():
+                    self._list_future.cancel()
                 return []
             finally:
-                if self._list_future is not None and self._list_future.done():
-                    self._list_future = None
+                self._list_future = None
 
     def reset(self) -> None:
         """Cancel any pending futures (e.g. on disconnect)."""
         if self._list_future is not None and not self._list_future.done():
-            self._list_future.cancel()
+            try:
+                self._list_future.cancel()
+            except Exception:
+                pass
         self._list_future = None
         self._buffer = ""
