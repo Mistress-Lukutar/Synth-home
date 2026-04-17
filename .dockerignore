@@ -1,4 +1,6 @@
 .venv/
+frontend/node_modules/
+static/dist/
 __pycache__/
 *.pyc
 *.pyo
