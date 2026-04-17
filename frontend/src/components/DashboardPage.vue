@@ -13,9 +13,9 @@
       </div>
 
       <div class="control-panel">
-        <h2 class="panel-title">Network</h2>
-        <div class="network-actions">
-          <button class="btn btn-primary" @click="doPermitJoin" :disabled="!store.state.isConnected">Permit Join</button>
+        <div class="panel-header">
+          <h2 class="panel-title">Network</h2>
+          <button class="btn btn-secondary btn-small" @click="doPermitJoin" :disabled="!store.state.isConnected">Permit Join</button>
         </div>
         <div class="info-grid">
           <div class="info-item">

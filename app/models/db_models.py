@@ -41,6 +41,7 @@ class Scenario(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(default=0)
     trigger_type: Mapped[str] = mapped_column(String(32), default="manual")
     trigger_data: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     action_type: Mapped[str] = mapped_column(String(32), default="command")

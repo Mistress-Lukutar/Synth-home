@@ -22,3 +22,4 @@ export const createScenario = (payload: any) => api<any>('/api/scenarios', { met
 export const updateScenario = (id: number, payload: any) => api<any>(`/api/scenarios/${id}`, { method: 'PATCH', body: JSON.stringify(payload) })
 export const deleteScenario = (id: number) => api<any>(`/api/scenarios/${id}`, { method: 'DELETE' })
 export const triggerScenario = (id: number) => api<any>(`/api/scenarios/${id}/trigger`, { method: 'POST' })
+export const reorderScenarios = (items: { id: number; sort_order: number }[]) => api<any>('/api/scenarios/reorder', { method: 'PATCH', body: JSON.stringify(items) })
