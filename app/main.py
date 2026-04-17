@@ -16,6 +16,7 @@ from app.dependencies import verify_api_key
 from app.exceptions import setup_exception_handlers
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
+from app.middleware.logging import StructuredLoggingMiddleware
 from app.routers import connection, devices, network, scenarios
 from app.services import sse_manager
 from app.services.event_bus import EventBus
@@ -126,6 +127,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(StructuredLoggingMiddleware)
     app.add_middleware(RateLimitMiddleware, max_requests=30, window_seconds=60)
     app.add_middleware(SecurityHeadersMiddleware)
 

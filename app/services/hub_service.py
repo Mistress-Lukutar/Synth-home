@@ -5,7 +5,9 @@ from typing import Optional, Dict, Any, List
 
 import structlog
 
+from app.db import async_session
 from app.exceptions import HubConnectionError
+from app.repositories.device import DeviceRepository
 from app.services.hub_client import HubClient
 from app.services.protocol import ProtocolHandler
 from app.services.event_bus import EventBus
@@ -78,6 +80,8 @@ class HubService:
         devices = await self._client.fetch_devices()
         if not devices:
             logger.warning("fetch_devices_empty_or_timeout")
+        else:
+            await self._sync_devices(devices)
         return devices
 
     def get_cached_devices(self) -> List[Dict[str, Any]]:
@@ -103,6 +107,7 @@ class HubService:
                     }
                 )
             self._devices = mapped
+            self._spawn_background(self._sync_devices(mapped))
 
         # Publish domain events for downstream consumers (scheduler, SSE, etc.)
         if evt in ("device_joined", "device_left", "state_change", "command_failed"):
@@ -113,6 +118,22 @@ class HubService:
         self._spawn_background(
             self._event_bus.publish("hub_message", {"data": data})
         )
+
+    async def _sync_devices(self, devices: List[Dict[str, Any]]) -> None:
+        """Persist or update device topology in the database."""
+        async with async_session() as session:
+            repo = DeviceRepository(session)
+            for d in devices:
+                await repo.upsert(
+                    d["ieee"],
+                    network_addr=d.get("network_addr"),
+                    endpoint=d.get("endpoint"),
+                    supports_hs=d.get("supports_hs", False),
+                    supports_xy=d.get("supports_xy", False),
+                    supports_ct=d.get("supports_ct", False),
+                    online=d.get("online", True),
+                )
+            await session.commit()
 
     def _spawn_background(self, coro: asyncio.coroutines) -> None:
         """Spawn a background task and keep a weak reference for cleanup."""
