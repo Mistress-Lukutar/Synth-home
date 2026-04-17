@@ -1,5 +1,7 @@
 """Connection router: COM-port discovery and connect/disconnect."""
 
+import asyncio
+
 import serial.tools.list_ports
 from fastapi import APIRouter, Depends
 
@@ -12,7 +14,9 @@ router = APIRouter()
 @router.get("/api/ports")
 async def list_ports() -> dict:
     """List available COM ports."""
-    ports = [port.device for port in serial.tools.list_ports.comports()]
+    ports = await asyncio.to_thread(
+        lambda: [port.device for port in serial.tools.list_ports.comports()]
+    )
     return {"ports": ports}
 
 

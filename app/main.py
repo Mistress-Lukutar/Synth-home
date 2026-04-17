@@ -5,6 +5,7 @@ import json
 
 import structlog
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -40,10 +41,20 @@ logger = structlog.get_logger(__name__)
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
+    settings_obj = get_settings()
+
     app = FastAPI(
         title="ZigbeeHUB WebUI",
         description="Web interface for ZigbeeHUB over USB Serial",
         version="0.1.0",
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings_obj.cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -69,7 +80,12 @@ def create_app() -> FastAPI:
         async def event_generator():
             try:
                 while True:
-                    msg = await queue.get()
+                    try:
+                        msg = await asyncio.wait_for(queue.get(), timeout=25.0)
+                    except asyncio.TimeoutError:
+                        # Send a heartbeat comment to keep the connection alive
+                        yield ": ping\n\n"
+                        continue
                     yield f"data: {json.dumps(msg)}\n\n"
             except asyncio.CancelledError:
                 pass
