@@ -17,6 +17,7 @@ class HubClient:
         self._running = False
         self._on_message: Optional[Callable[[Dict[str, Any]], None]] = None
         self._list_future: Optional[asyncio.Future] = None
+        self._fetch_lock = asyncio.Lock()
 
     def set_on_message(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         """Set callback for incoming JSON messages."""
@@ -25,7 +26,9 @@ class HubClient:
     async def connect(self, port: str) -> bool:
         """Open the serial port and start the background reader."""
         try:
-            self._ser = serial.Serial(port, 115200, timeout=0.05)
+            self._ser = await asyncio.to_thread(
+                serial.Serial, port, 115200, timeout=0.5
+            )
             self._port = port
             self._running = True
             self._reader_task = asyncio.create_task(self._read_loop())
@@ -45,7 +48,7 @@ class HubClient:
                 pass
             self._reader_task = None
         if self._ser is not None:
-            self._ser.close()
+            await asyncio.to_thread(self._ser.close)
             self._ser = None
         self._port = None
 
@@ -100,14 +103,26 @@ class HubClient:
 
     async def fetch_devices(self) -> list:
         """Request the device list from the hub and wait for the response."""
-        await self.send_raw({"cmd": "list"})
-        loop = asyncio.get_running_loop()
-        self._list_future = loop.create_future()
-        try:
-            return await asyncio.wait_for(self._list_future, timeout=3.0)
-        except asyncio.TimeoutError:
-            self._list_future = None
-            return []
+        async with self._fetch_lock:
+            # If another call is already waiting, piggy-back on its future.
+            if self._list_future is not None and not self._list_future.done():
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.shield(self._list_future), timeout=3.0
+                    )
+                except asyncio.TimeoutError:
+                    return []
+
+            await self.send_raw({"cmd": "list"})
+            loop = asyncio.get_running_loop()
+            self._list_future = loop.create_future()
+            try:
+                return await asyncio.wait_for(self._list_future, timeout=3.0)
+            except asyncio.TimeoutError:
+                return []
+            finally:
+                if self._list_future is not None and self._list_future.done():
+                    self._list_future = None
 
     async def send_command(
         self, ieee: str, action: str, params: Optional[Dict[str, Any]] = None

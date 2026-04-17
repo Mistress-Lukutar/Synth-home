@@ -74,11 +74,10 @@ class HubService:
     async def fetch_devices(self) -> List[Dict[str, Any]]:
         if not self.is_connected():
             raise HubConnectionError()
-        try:
-            await asyncio.wait_for(self._client.fetch_devices(), timeout=3.0)
-        except asyncio.TimeoutError:
-            logger.warning("fetch_devices_timeout")
-        return self._devices
+        devices = await self._client.fetch_devices()
+        if not devices:
+            logger.warning("fetch_devices_empty_or_timeout")
+        return devices
 
     def get_cached_devices(self) -> List[Dict[str, Any]]:
         return list(self._devices)
