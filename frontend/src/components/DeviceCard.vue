@@ -33,7 +33,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, watch } from 'vue'
 import { useHubStore } from '../composables/useHubStore'
 import * as api from '../api'
 
@@ -44,8 +44,16 @@ const editing = ref(false)
 const editName = ref('')
 const inputRef = ref<HTMLInputElement | null>(null)
 
-// Local toggle state: off -> on, on -> off. Defaults to off.
-const localState = ref<'off' | 'on' | 'pending'>('off')
+// Initialize from persisted last_command; default off
+const localState = ref<'off' | 'on' | 'pending'>(
+  props.device.last_command === 'on' ? 'on' : 'off'
+)
+
+// Sync if parent data changes (e.g. after refresh)
+watch(() => props.device.last_command, (cmd) => {
+  if (cmd === 'on') localState.value = 'on'
+  else if (cmd === 'off') localState.value = 'off'
+})
 
 const displayName = computed(() => props.device.name || 'Unknown Device')
 
@@ -71,6 +79,10 @@ async function save() {
   }
 }
 
+function delay(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
 async function toggle() {
   if (!store.state.isConnected || localState.value === 'pending') return
 
@@ -80,11 +92,12 @@ async function toggle() {
 
   store.logEvent(`Command ${action} → ${props.device.ieee}`)
   try {
-    await api.sendCommand(props.device.ieee, action)
+    const sendPromise = api.sendCommand(props.device.ieee, action)
+    // Ensure pending state is visible for at least 300ms
+    await Promise.all([sendPromise, delay(300)])
     localState.value = target
   } catch (e: any) {
     store.logEvent('Command error: ' + e.message)
-    // Revert to previous state on failure
     localState.value = target === 'on' ? 'off' : 'on'
   }
 }

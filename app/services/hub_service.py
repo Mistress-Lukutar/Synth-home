@@ -65,7 +65,21 @@ class HubService:
             raise HubConnectionError()
         result = await self._client.send_command(ieee, action, params)
         logger.info("command_sent", ieee=ieee, action=action)
+        # Persist last command for UI state restoration
+        if action in ("on", "off", "toggle"):
+            await self._update_last_command(ieee, action)
         return result
+
+    async def _update_last_command(self, ieee: str, action: str) -> None:
+        try:
+            async with async_session() as session:
+                repo = DeviceRepository(session)
+                device = await repo.get_by_ieee(ieee)
+                if device:
+                    device.last_command = action
+                    await session.commit()
+        except Exception:
+            pass
 
     async def permit_join(self, duration: int) -> Dict[str, Any]:
         if not self.is_connected():

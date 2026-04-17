@@ -44,6 +44,7 @@ class DeviceRepository(BaseRepository[Device]):
                     "supports_xy": device.supports_xy,
                     "supports_ct": device.supports_ct,
                     "online": device.online,
+                    "last_command": device.last_command,
                 }
             )
         return rows
