@@ -1,0 +1,48 @@
+"""Connection router: COM-port discovery and connect/disconnect."""
+
+import serial.tools.list_ports
+from fastapi import APIRouter, Depends
+
+from app.models.schemas import ConnectRequest, StatusResponse
+from app.services.hub_service import HubService, get_hub_service
+
+router = APIRouter()
+
+
+@router.get("/api/ports")
+async def list_ports() -> dict:
+    """List available COM ports."""
+    ports = [port.device for port in serial.tools.list_ports.comports()]
+    return {"ports": ports}
+
+
+@router.post("/api/connect")
+async def connect_port(
+    req: ConnectRequest,
+    service: HubService = Depends(get_hub_service),
+) -> StatusResponse:
+    """Connect to the hub on the selected COM port."""
+    ok = await service.connect(req.port)
+    if ok:
+        return StatusResponse(success=True, data={"port": req.port})
+    return StatusResponse(success=False, error=f"Failed to connect to {req.port}")
+
+
+@router.post("/api/disconnect")
+async def disconnect_port(
+    service: HubService = Depends(get_hub_service),
+) -> StatusResponse:
+    """Disconnect from the hub."""
+    await service.disconnect()
+    return StatusResponse(success=True)
+
+
+@router.get("/api/status")
+async def get_status(
+    service: HubService = Depends(get_hub_service),
+) -> dict:
+    """Return current hub connection status."""
+    return {
+        "connected": service.is_connected(),
+        "port": service.get_port(),
+    }

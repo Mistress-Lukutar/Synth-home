@@ -1,0 +1,24 @@
+# Agent workspace
+.agents/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+
+# Database
+zigbeehub.db
+*.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
