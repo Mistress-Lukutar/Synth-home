@@ -13,7 +13,7 @@ class ScenarioRepository(BaseRepository[Scenario]):
 
     async def list_ordered(self) -> list[Scenario]:
         result = await self._session.execute(
-            select(Scenario).order_by(Scenario.id.desc())
+            select(Scenario).order_by(Scenario.sort_order.asc(), Scenario.id.asc())
         )
         return list(result.scalars().all())
 

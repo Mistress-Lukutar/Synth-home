@@ -12,6 +12,7 @@ export interface Scenario {
   id: number
   name: string
   is_enabled: boolean
+  sort_order: number
   trigger_type: string
   trigger_data?: any
   action_type: string
@@ -196,6 +197,20 @@ async function loadScenarios() {
   }
 }
 
+async function reorderScenarios(fromIndex: number, toIndex: number) {
+  const list = [...state.scenarios]
+  const [moved] = list.splice(fromIndex, 1)
+  list.splice(toIndex, 0, moved)
+  list.forEach((s, i) => { s.sort_order = i })
+  state.scenarios = list
+  try {
+    await api.reorderScenarios(list.map((s, i) => ({ id: s.id, sort_order: i })))
+  } catch (e: any) {
+    logEvent('Reorder failed: ' + e.message)
+    await loadScenarios()
+  }
+}
+
 export function useHubStore() {
   return {
     state: readonly(state),
@@ -206,5 +221,6 @@ export function useHubStore() {
     refreshPorts,
     restoreConnection,
     loadScenarios,
+    reorderScenarios,
   }
 }

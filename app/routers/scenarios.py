@@ -3,7 +3,7 @@
 import asyncio
 from typing import Annotated, List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +27,7 @@ class ScenarioCreate(BaseModel):
     action_type: str = Field(default="command")
     action_data: dict | None = None
     is_enabled: bool = True
+    sort_order: int = 0
 
 
 class ScenarioUpdate(BaseModel):
@@ -36,12 +37,14 @@ class ScenarioUpdate(BaseModel):
     action_type: str | None = None
     action_data: dict | None = None
     is_enabled: bool | None = None
+    sort_order: int | None = None
 
 
 class ScenarioOut(BaseModel):
     id: int
     name: str
     is_enabled: bool
+    sort_order: int
     trigger_type: str
     trigger_data: dict | None
     action_type: str
@@ -68,6 +71,7 @@ async def create_scenario(
         action_type=req.action_type,
         action_data=req.action_data,
         is_enabled=req.is_enabled,
+        sort_order=req.sort_order,
     )
     db.add(scenario)
     await db.commit()
@@ -75,6 +79,24 @@ async def create_scenario(
     if scenario.is_enabled and scenario.trigger_type == "schedule":
         await asyncio.to_thread(update_scenario_job, scenario)
     return scenario
+
+
+class ReorderItem(BaseModel):
+    id: int
+    sort_order: int
+
+
+@router.patch("/api/scenarios/reorder", response_model=StatusResponse)
+async def reorder_scenarios(
+    items: Annotated[List[ReorderItem], Body()],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> StatusResponse:
+    for item in items:
+        scenario = await db.get(Scenario, item.id)
+        if scenario:
+            scenario.sort_order = item.sort_order
+    await db.commit()
+    return StatusResponse(success=True)
 
 
 @router.patch("/api/scenarios/{scenario_id}", response_model=ScenarioOut)

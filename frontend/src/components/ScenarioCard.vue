@@ -1,44 +1,149 @@
 <template>
-  <div class="list-card">
-    <div class="list-info">
-      <div class="editable-title">
-        <span v-if="!editing" class="title-text" @click="startEdit">{{ scenario.name }}</span>
-        <svg v-if="!editing" class="edit-icon" @click="startEdit" viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+  <div class="list-card" :class="{ 'is-editing': showEdit }">
+    <div class="card-main">
+      <div class="card-left">
+        <div class="drag-handle" title="Drag to reorder">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="#666">
+            <circle cx="9" cy="6" r="2"/><circle cx="15" cy="6" r="2"/>
+            <circle cx="9" cy="12" r="2"/><circle cx="15" cy="12" r="2"/>
+            <circle cx="9" cy="18" r="2"/><circle cx="15" cy="18" r="2"/>
+          </svg>
+        </div>
         <input
-          v-else
-          ref="inputRef"
-          v-model="editName"
-          class="title-input"
-          @keydown.enter="save"
-          @keydown.esc="cancel"
-          @blur="save"
+          type="checkbox"
+          class="enable-check"
+          :checked="scenario.is_enabled"
+          @change="toggle"
+          title="Enable / Disable"
         />
       </div>
-      <div class="list-details">
-        <span>{{ details }}</span>
-        <span :class="scenario.is_enabled ? 'device-online' : 'device-offline'">{{ scenario.is_enabled ? 'Enabled' : 'Disabled' }}</span>
+      <div class="list-info">
+        <div class="editable-title">
+          <span v-if="!editingName" class="title-text" @click="startNameEdit">{{ scenario.name }}</span>
+          <svg v-if="!editingName" class="edit-icon" @click="startNameEdit" viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+          <input
+            v-else
+            ref="nameInputRef"
+            v-model="editName"
+            class="title-input"
+            @keydown.enter="saveName"
+            @keydown.esc="cancelName"
+            @blur="saveName"
+          />
+        </div>
+        <div class="list-details">
+          <span>{{ details }}</span>
+        </div>
+      </div>
+      <div class="list-actions">
+        <button class="btn-icon" @click="run" title="Run">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="#00ff88">
+            <polygon points="5,3 19,12 5,21"/>
+          </svg>
+        </button>
+        <button class="btn-icon" :class="{ active: showEdit }" @click="toggleEdit" title="Edit">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="#888">
+            <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+          </svg>
+        </button>
+        <button class="btn-icon btn-danger" @click="remove" title="Delete">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="#ff4444">
+            <path d="M3 6h18v2H3zm2 3h14v13H5zm3-5h8v2H8z"/>
+          </svg>
+        </button>
       </div>
     </div>
-    <div class="list-actions">
-      <button class="btn btn-small btn-success" @click="run">Run</button>
-      <button class="btn btn-small btn-toggle" @click="toggle">{{ scenario.is_enabled ? 'Disable' : 'Enable' }}</button>
-      <button class="btn btn-small btn-danger" @click="remove">Delete</button>
+
+    <div v-if="showEdit" class="edit-panel">
+      <div class="edit-form">
+        <div class="edit-row">
+          <label class="edit-label">Trigger Type</label>
+          <select v-model="editForm.trigger_type" class="edit-input" @change="onTriggerChange">
+            <option value="manual">Manual</option>
+            <option value="device_event">Device Event</option>
+            <option value="schedule">Schedule</option>
+          </select>
+        </div>
+        <div class="edit-row">
+          <label class="edit-label">Target Device</label>
+          <select v-model="editForm.target_device" class="edit-input">
+            <option value="">Select device...</option>
+            <option v-for="d in store.state.devices" :key="d.ieee" :value="d.ieee">{{ d.name || 'Unknown' }} ({{ d.ieee }})</option>
+          </select>
+        </div>
+        <div class="edit-row">
+          <label class="edit-label">Action</label>
+          <select v-model="editForm.action" class="edit-input">
+            <option value="on">On</option>
+            <option value="off">Off</option>
+            <option value="toggle">Toggle</option>
+            <option value="level">Level</option>
+            <option value="color">Color</option>
+          </select>
+        </div>
+        <div class="edit-row">
+          <label class="edit-label">Params (JSON)</label>
+          <input type="text" v-model="editForm.params" class="edit-input" placeholder='{"level":128}' />
+        </div>
+
+        <template v-if="editForm.trigger_type === 'schedule'">
+          <div class="edit-row">
+            <label class="edit-label">Days of Week</label>
+            <div class="checkbox-row">
+              <label v-for="day in daysOfWeek" :key="day">
+                <input type="checkbox" v-model="editForm.days" :value="day" /> {{ day.charAt(0).toUpperCase() + day.slice(1) }}
+              </label>
+            </div>
+          </div>
+          <div class="edit-row">
+            <label class="edit-label">Time</label>
+            <input type="time" v-model="editForm.time" class="edit-input" />
+          </div>
+        </template>
+
+        <template v-if="editForm.trigger_type === 'device_event'">
+          <div class="edit-row">
+            <label class="edit-label">Trigger Config (JSON)</label>
+            <input type="text" v-model="editForm.trigger_config" class="edit-input" placeholder='{"event":"device_joined"}' />
+          </div>
+        </template>
+      </div>
+      <div class="edit-actions">
+        <button class="btn btn-success" @click="saveEdit">Save</button>
+        <button class="btn btn-toggle" @click="cancelEdit">Cancel</button>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
+import { ref, reactive, computed, nextTick, watch } from 'vue'
 import { useHubStore } from '../composables/useHubStore'
 import * as api from '../api'
 
 const props = defineProps<{ scenario: any }>()
 const emit = defineEmits(['update'])
 const store = useHubStore()
+const daysOfWeek = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
 
-const editing = ref(false)
+// Inline name edit
+const editingName = ref(false)
 const editName = ref('')
-const inputRef = ref<HTMLInputElement | null>(null)
+const nameInputRef = ref<HTMLInputElement | null>(null)
+
+// Full scenario edit
+const showEdit = ref(false)
+const editForm = reactive({
+  name: '',
+  trigger_type: 'manual',
+  target_device: '',
+  action: 'toggle',
+  params: '',
+  time: '08:00',
+  days: [...daysOfWeek],
+  trigger_config: '',
+  is_enabled: true,
+})
 
 const details = computed(() => {
   let s = `Trigger: ${props.scenario.trigger_type}`
@@ -51,18 +156,18 @@ const details = computed(() => {
   return s
 })
 
-function startEdit() {
-  editing.value = true
+function startNameEdit() {
+  editingName.value = true
   editName.value = props.scenario.name
-  nextTick(() => inputRef.value?.focus())
+  nextTick(() => nameInputRef.value?.focus())
 }
 
-function cancel() {
-  editing.value = false
+function cancelName() {
+  editingName.value = false
 }
 
-async function save() {
-  editing.value = false
+async function saveName() {
+  editingName.value = false
   const newName = editName.value.trim()
   if (!newName || newName === props.scenario.name) return
   try {
@@ -70,6 +175,95 @@ async function save() {
     emit('update')
   } catch (e: any) {
     store.logEvent('Rename failed: ' + e.message)
+  }
+}
+
+function toggleEdit() {
+  if (showEdit.value) {
+    showEdit.value = false
+    return
+  }
+  // Fill form from current scenario
+  editForm.name = props.scenario.name
+  editForm.trigger_type = props.scenario.trigger_type
+  editForm.is_enabled = props.scenario.is_enabled
+
+  const ad = props.scenario.action_data || {}
+  editForm.target_device = ad.ieee || ''
+  editForm.action = ad.action || 'toggle'
+  editForm.params = ad.params ? JSON.stringify(ad.params) : ''
+
+  if (props.scenario.trigger_type === 'schedule') {
+    const td = props.scenario.trigger_data || {}
+    editForm.days = (td.days || 'mon,tue,wed,thu,fri,sat,sun').split(',')
+    editForm.time = `${String(td.hour || 0).padStart(2, '0')}:${String(td.minute || 0).padStart(2, '0')}`
+    editForm.trigger_config = ''
+  } else if (props.scenario.trigger_type === 'device_event') {
+    editForm.trigger_config = props.scenario.trigger_data ? JSON.stringify(props.scenario.trigger_data) : ''
+    editForm.days = [...daysOfWeek]
+    editForm.time = '08:00'
+  } else {
+    editForm.trigger_config = ''
+    editForm.days = [...daysOfWeek]
+    editForm.time = '08:00'
+  }
+
+  showEdit.value = true
+}
+
+function onTriggerChange() {
+  editForm.trigger_config = ''
+  editForm.days = [...daysOfWeek]
+  editForm.time = '08:00'
+}
+
+function cancelEdit() {
+  showEdit.value = false
+}
+
+async function saveEdit() {
+  let action_data: any = { ieee: editForm.target_device, action: editForm.action, params: {} }
+  if (editForm.params.trim()) {
+    try {
+      action_data.params = JSON.parse(editForm.params.trim())
+    } catch {
+      store.logEvent('Params must be valid JSON')
+      return
+    }
+  }
+
+  let trigger_data: any = null
+  if (editForm.trigger_type === 'schedule') {
+    const [h, m] = (editForm.time || '00:00').split(':')
+    trigger_data = {
+      days: editForm.days.join(','),
+      hour: parseInt(h, 10),
+      minute: parseInt(m, 10),
+    }
+  } else if (editForm.trigger_type === 'device_event' && editForm.trigger_config.trim()) {
+    try {
+      trigger_data = JSON.parse(editForm.trigger_config.trim())
+    } catch {
+      store.logEvent('Trigger Config must be valid JSON')
+      return
+    }
+  }
+
+  const payload = {
+    name: editForm.name,
+    trigger_type: editForm.trigger_type,
+    trigger_data,
+    action_type: 'command',
+    action_data,
+    is_enabled: editForm.is_enabled,
+  }
+
+  try {
+    await api.updateScenario(props.scenario.id, payload)
+    showEdit.value = false
+    emit('update')
+  } catch (e: any) {
+    store.logEvent('Update failed: ' + e.message)
   }
 }
 
@@ -109,12 +303,45 @@ async function remove() {
   border-radius: 10px;
   padding: 12px 16px;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 12px;
   transition: all 0.2s;
 }
 .list-card:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.2); }
-.list-info { display: flex; flex-direction: column; gap: 4px; }
+.list-card.is-editing { border-color: rgba(0,255,136,0.3); }
+
+.card-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.card-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.drag-handle {
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  padding: 4px;
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+.drag-handle:hover { background: rgba(255,255,255,0.1); }
+.drag-handle:active { cursor: grabbing; }
+
+.enable-check {
+  width: 18px;
+  height: 18px;
+  accent-color: #00ff88;
+  cursor: pointer;
+}
+
+.list-info { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
 .editable-title { display: flex; align-items: center; gap: 8px; cursor: text; }
 .title-text { font-weight: 600; font-size: 1rem; color: #fff; border-bottom: 1px dashed transparent; transition: border-color 0.2s; }
 .editable-title:hover .title-text { border-bottom-color: rgba(255,255,255,0.3); }
@@ -134,21 +361,78 @@ async function remove() {
   min-width: 120px;
 }
 .list-details { font-size: 0.8rem; color: #888; display: flex; gap: 12px; flex-wrap: wrap; }
-.device-online { color: #00ff88; }
-.device-offline { color: #ff4444; }
-.list-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.list-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+.btn-icon {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px;
+  padding: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+.btn-icon:hover { background: rgba(255,255,255,0.15); border-color: rgba(255,255,255,0.25); }
+.btn-icon.active { background: rgba(0,255,136,0.15); border-color: rgba(0,255,136,0.4); }
+.btn-icon.active svg { fill: #00ff88; }
+.btn-icon.btn-danger:hover { background: rgba(255,68,68,0.15); border-color: rgba(255,68,68,0.3); }
+
+.edit-panel {
+  border-top: 1px solid rgba(255,255,255,0.1);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.edit-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.edit-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.edit-row:nth-child(1),
+.edit-row:nth-child(5),
+.edit-row:nth-child(6) {
+  grid-column: 1 / -1;
+}
+.edit-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: #888;
+  letter-spacing: 0.5px;
+}
+.edit-input {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: none;
+  background: rgba(255,255,255,0.1);
+  color: white;
+  font-size: 13px;
+}
+.edit-input:focus { outline: 2px solid rgba(255,255,255,0.3); }
+.edit-input option { background: #222; color: #fff; }
+.checkbox-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.checkbox-row label { display: flex; align-items: center; gap: 4px; font-size: 0.85rem; color: #ccc; cursor: pointer; }
+
+.edit-actions { display: flex; gap: 10px; }
 
 .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; transition: all 0.2s; text-transform: uppercase; letter-spacing: 0.5px; }
-.btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-success { background: #00ff88; color: #111; }
 .btn-success:hover { background: #00cc6a; }
 .btn-toggle { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2); color: #fff; }
 .btn-toggle:hover { background: rgba(255,255,255,0.15); }
-.btn-danger { background: #ff4444; color: white; }
-.btn-danger:hover { background: #cc0000; }
-.btn-small { padding: 6px 12px; font-size: 12px; }
 
 @media (max-width: 768px) {
-  .list-card { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .card-main { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .list-actions { align-self: flex-end; }
+  .edit-form { grid-template-columns: 1fr; }
+  .edit-row:nth-child(n) { grid-column: auto; }
 }
 </style>

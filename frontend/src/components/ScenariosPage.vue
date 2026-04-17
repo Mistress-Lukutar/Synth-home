@@ -78,7 +78,17 @@
         <div class="panel-header"><h2 class="panel-title">Scenarios</h2></div>
         <div class="list-cards-container">
           <div v-if="store.state.scenarios.length === 0" class="list-empty">No scenarios</div>
-          <ScenarioCard v-for="s in store.state.scenarios" :key="s.id" :scenario="s" @update="store.loadScenarios" />
+          <div
+            v-for="(s, index) in store.state.scenarios"
+            :key="s.id"
+            class="drag-item"
+            draggable="true"
+            @dragstart="dragStart($event, index)"
+            @dragover.prevent
+            @drop="drop($event, index)"
+          >
+            <ScenarioCard :scenario="s" @update="store.loadScenarios" />
+          </div>
         </div>
       </div>
     </div>
@@ -150,6 +160,7 @@ async function submit() {
     action_type: form.action_type,
     action_data,
     is_enabled: form.is_enabled,
+    sort_order: store.state.scenarios.length,
   }
 
   try {
@@ -162,6 +173,24 @@ async function submit() {
   } catch (e: any) {
     alert('Failed to create scenario')
   }
+}
+
+let dragIndex = -1
+
+function dragStart(e: DragEvent, index: number) {
+  dragIndex = index
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(index))
+  }
+}
+
+function drop(e: DragEvent, index: number) {
+  e.preventDefault()
+  const from = dragIndex
+  if (from === -1 || from === index) return
+  store.reorderScenarios(from, index)
+  dragIndex = -1
 }
 
 onMounted(() => {
@@ -213,6 +242,8 @@ onMounted(() => {
 .form-actions { display: flex; gap: 10px; margin-top: 8px; }
 .schedule-fields { display: contents; }
 .list-cards-container { display: flex; flex-direction: column; gap: 10px; flex: 1; overflow-y: auto; min-height: 0; }
+.drag-item { cursor: grab; }
+.drag-item:active { cursor: grabbing; }
 .list-cards-container::-webkit-scrollbar { width: 6px; }
 .list-cards-container::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); border-radius: 3px; }
 .list-cards-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 3px; }
