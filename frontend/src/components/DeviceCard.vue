@@ -21,8 +21,13 @@
       </div>
     </div>
     <div class="device-actions">
-      <button class="btn btn-small btn-on" @click="sendCmd('on')">On</button>
-      <button class="btn btn-small btn-off" @click="sendCmd('off')">Off</button>
+      <div
+        class="toggle-switch"
+        :class="{ on: localState === 'on', pending: localState === 'pending' }"
+        @click="toggle"
+      >
+        <div class="knob"></div>
+      </div>
     </div>
   </div>
 </template>
@@ -38,6 +43,9 @@ const store = useHubStore()
 const editing = ref(false)
 const editName = ref('')
 const inputRef = ref<HTMLInputElement | null>(null)
+
+// Local toggle state: off -> on, on -> off. Defaults to off.
+const localState = ref<'off' | 'on' | 'pending'>('off')
 
 const displayName = computed(() => props.device.name || 'Unknown Device')
 
@@ -63,13 +71,21 @@ async function save() {
   }
 }
 
-async function sendCmd(action: string) {
-  if (!store.state.isConnected) return
+async function toggle() {
+  if (!store.state.isConnected || localState.value === 'pending') return
+
+  const target = localState.value === 'on' ? 'off' : 'on'
+  const action = target === 'on' ? 'on' : 'off'
+  localState.value = 'pending'
+
   store.logEvent(`Command ${action} → ${props.device.ieee}`)
   try {
     await api.sendCommand(props.device.ieee, action)
+    localState.value = target
   } catch (e: any) {
     store.logEvent('Command error: ' + e.message)
+    // Revert to previous state on failure
+    localState.value = target === 'on' ? 'off' : 'on'
   }
 }
 </script>
@@ -109,12 +125,45 @@ async function sendCmd(action: string) {
 .device-ieee { font-family: 'SF Mono', Monaco, monospace; }
 .device-online { color: #00ff88; }
 .device-offline { color: #ff4444; }
-.device-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.btn-small { padding: 6px 12px; font-size: 12px; }
-.btn-on { background: rgba(0,255,136,0.15); border: 1px solid rgba(0,255,136,0.4); color: #00ff88; }
-.btn-on:hover { background: rgba(0,255,136,0.25); }
-.btn-off { background: rgba(255,68,68,0.15); border: 1px solid rgba(255,68,68,0.4); color: #ff4444; }
-.btn-off:hover { background: rgba(255,68,68,0.25); }
+.device-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+/* Toggle Switch */
+.toggle-switch {
+  width: 56px;
+  height: 30px;
+  border-radius: 15px;
+  background: #666;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.3s;
+  flex-shrink: 0;
+}
+.toggle-switch.pending {
+  cursor: wait;
+}
+.toggle-switch .knob {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #fff;
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  transition: left 0.3s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+.toggle-switch.on {
+  background: #00ff88;
+}
+.toggle-switch.on .knob {
+  left: 29px;
+}
+.toggle-switch.pending {
+  background: #ffaa00;
+}
+.toggle-switch.pending .knob {
+  left: 16px;
+}
 
 @media (max-width: 768px) {
   .device-card { flex-direction: column; align-items: flex-start; gap: 10px; }
