@@ -15,11 +15,14 @@ from app.config import get_settings
 from app.dependencies import verify_api_key
 from app.exceptions import setup_exception_handlers
 from app.middleware.rate_limit import RateLimitMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.routers import connection, devices, network, scenarios
 from app.services import sse_manager
 from app.services.event_bus import EventBus
 from app.services.hub_service import HubService
 from app.services.scenario_service import ScenarioService
+from app.db import engine
+from sqlalchemy import text
 from app.scheduler_engine import start_scheduler, stop_scheduler, load_scheduler_jobs, set_scenario_service, get_scheduler
 
 logger = structlog.get_logger(__name__)
@@ -124,6 +127,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.add_middleware(RateLimitMiddleware, max_requests=30, window_seconds=60)
+    app.add_middleware(SecurityHeadersMiddleware)
 
     app.mount("/static", StaticFiles(directory="static"), name="static")
     setup_exception_handlers(app)
@@ -139,6 +143,24 @@ def create_app() -> FastAPI:
     async def index(request: Request) -> HTMLResponse:
         """Serve the main HTML page."""
         return templates.TemplateResponse(request, "index.html")
+
+    @app.get("/health")
+    async def health(request: Request) -> dict:
+        """Health check endpoint for monitoring."""
+        hub = request.app.state.hub_service
+        db_ok = False
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("SELECT 1"))
+            db_ok = True
+        except Exception:
+            pass
+        return {
+            "status": "healthy" if db_ok else "degraded",
+            "database": "up" if db_ok else "down",
+            "hub_connected": hub.is_connected(),
+            "hub_port": hub.get_port(),
+        }
 
     @app.get("/events", dependencies=[Depends(verify_api_key)])
     async def events(request: Request) -> StreamingResponse:
