@@ -4,8 +4,6 @@ import * as api from '../api'
 export interface Endpoint {
   id: number
   clusters: number[]
-  type: string
-  color_caps: { hs: boolean; xy: boolean; ct: boolean; color_loop: boolean } | null
 }
 
 export interface Device {
@@ -160,6 +158,15 @@ function handleStateChange(data: any) {
         device.state[epKey].on = Boolean(value)
       } else if (clusterId === 0x0008 && attrId === 0x0000) {
         device.state[epKey].level = Number(value)
+      } else if (clusterId === 0x0300 && attrId === 0x4002) {
+        // ColorCapabilities bitmask (uint16)
+        const bitmask = Number(value)
+        device.state[epKey].color_caps = {
+          hs: !!(bitmask & 0x01),
+          xy: !!(bitmask & 0x10),
+          ct: !!(bitmask & 0x20),
+          color_loop: !!(bitmask & 0x08),
+        }
       } else if (clusterId === 0x0300) {
         if (attrId === 0x0000) device.state[epKey].hue = Number(value)
         else if (attrId === 0x0001) device.state[epKey].sat = Number(value)
@@ -301,6 +308,14 @@ async function refreshDevices() {
     const data = await api.listDevices()
     if (data.success) {
       state.devices = data.devices || []
+    }
+    // Request ColorCapabilities (0x0300/0x4002) for every endpoint with Color Control cluster
+    for (const device of state.devices) {
+      for (const ep of device.endpoints || []) {
+        if ((ep.clusters || []).includes(768)) {
+          api.readAttr(device.ieee, ep.id, '0x0300', '0x4002').catch(() => {})
+        }
+      }
     }
   } catch (e: any) {
     logEvent('Load devices error: ' + e.message)

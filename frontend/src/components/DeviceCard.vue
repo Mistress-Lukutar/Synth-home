@@ -28,7 +28,7 @@
       <div v-for="ep in device.endpoints || []" :key="ep.id" class="endpoint-row">
         <div class="ep-header">
           <span class="ep-label">EP{{ ep.id }}</span>
-          <span class="ep-type">{{ ep.type }}</span>
+          <span class="ep-clusters">{{ (ep.clusters || []).join(', ') }}</span>
         </div>
         <div class="ep-controls">
           <!-- On/Off toggle (cluster 0x0006 = 6) -->
@@ -55,27 +55,32 @@
           </div>
 
           <!-- Color control (cluster 0x0300 = 768) -->
-          <div v-if="hasCluster(ep, 768)" class="color-control">
-            <input
-              v-if="ep.color_caps?.hs || ep.color_caps?.xy"
-              type="color"
-              :value="getColorHex(ep.id)"
-              @change="(e) => setColor(ep.id, (e.target as HTMLInputElement).value)"
-              :disabled="isPending(ep.id, 'color')"
-              class="color-picker"
-            />
-            <div v-if="ep.color_caps?.ct" class="ct-control">
+          <template v-if="hasCluster(ep, 768)">
+            <div class="color-mode-select" v-if="colorSupports(ep.id, 'hs') || colorSupports(ep.id, 'xy')">
+              <select v-model="colorModes[ep.id]">
+                <option v-if="colorSupports(ep.id, 'hs')" value="hs">HS</option>
+                <option v-if="colorSupports(ep.id, 'xy')" value="xy">XY</option>
+              </select>
+              <input
+                type="color"
+                :value="getColorHex(ep.id)"
+                @change="(e) => setColor(ep.id, (e.target as HTMLInputElement).value)"
+                :disabled="isPending(ep.id, 'color')"
+                class="color-picker"
+              />
+            </div>
+            <div v-if="colorSupports(ep.id, 'ct')" class="ct-control">
               <input
                 type="range"
                 min="153"
                 max="500"
                 :value="getState(ep.id, 'ct') ?? 300"
                 @change="(e) => setCt(ep.id, Number((e.target as HTMLInputElement).value))"
-                :disabled="isPending(ep.id, 'color')"
+                :disabled="isPending(ep.id, 'color_ct')"
               />
               <span class="ct-label">CT</span>
             </div>
-          </div>
+          </template>
         </div>
       </div>
       <div v-if="!(device.endpoints || []).length" class="endpoint-row">
@@ -86,7 +91,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, reactive } from 'vue'
 import { useHubStore } from '../composables/useHubStore'
 import * as api from '../api'
 
@@ -96,6 +101,7 @@ const store = useHubStore()
 const editing = ref(false)
 const editName = ref('')
 const inputRef = ref<HTMLInputElement | null>(null)
+const colorModes = reactive<Record<number, string>>({})
 
 const displayName = computed(() => props.device.name || 'Unknown Device')
 
@@ -144,8 +150,13 @@ function getState(epId: number, key: string): any {
 function getColorHex(epId: number): string {
   const color = getState(epId, 'color')
   if (typeof color === 'string' && color.startsWith('#')) return color
-  // Default fallback
   return '#ffffff'
+}
+
+function colorSupports(epId: number, cap: 'hs' | 'xy' | 'ct' | 'color_loop'): boolean {
+  const caps = getState(epId, 'color_caps')
+  if (!caps) return true // show all until caps are known
+  return !!caps[cap]
 }
 
 function isPending(epId: number, action: string): boolean {
@@ -182,11 +193,21 @@ async function setLevel(epId: number, level: number) {
 }
 
 async function setColor(epId: number, hex: string) {
-  await sendAndTrack('color', epId, { hex })
+  const mode = colorModes[epId] || 'hs'
+  await sendAndTrack('color', epId, { hex, mode })
 }
 
 async function setCt(epId: number, ct: number) {
-  await sendAndTrack('color', epId, { ct })
+  try {
+    const result = await api.sendColorCt(props.device.ieee, ct, epId)
+    store.state.pendingCommands.set(result.correlation_id, {
+      ieee: props.device.ieee,
+      endpoint: epId,
+      action: 'color_ct',
+    })
+  } catch (e: any) {
+    store.logEvent('color_ct error: ' + e.message)
+  }
 }
 </script>
 
@@ -257,7 +278,16 @@ async function setCt(epId: number, ct: number) {
 }
 .ep-header { display: flex; align-items: center; gap: 8px; }
 .ep-label { font-size: 0.75rem; text-transform: uppercase; color: #888; letter-spacing: 0.5px; }
-.ep-type { font-size: 0.8rem; color: #aaa; }
+.ep-clusters { font-size: 0.8rem; color: #aaa; font-family: 'SF Mono', Monaco, monospace; }
+.color-mode-select { display: flex; align-items: center; gap: 8px; }
+.color-mode-select select {
+  background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 4px;
+  color: #fff;
+  padding: 4px 8px;
+  font-size: 12px;
+}
 .ep-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 
 /* Toggle Switch */
