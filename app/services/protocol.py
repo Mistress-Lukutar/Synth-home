@@ -62,7 +62,7 @@ class ProtocolHandler:
         elif evt in ("command_status", "state_change", "device_joined", "device_left"):
             logger.info(
                 "hub_raw_event",
-                event=evt,
+                hub_event=evt,
                 ieee=ieee,
                 correlation_id=correlation_id,
                 status=status,
@@ -72,7 +72,7 @@ class ProtocolHandler:
         else:
             logger.debug(
                 "hub_raw_message",
-                event=evt,
+                hub_event=evt,
                 ieee=ieee,
                 raw_keys=list(data.keys()),
                 raw_summary=str(data)[:300],
