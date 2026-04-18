@@ -158,8 +158,11 @@ function handleStateChange(data: any) {
         device.state[epKey].on = Boolean(value)
       } else if (clusterId === 0x0008 && attrId === 0x0000) {
         device.state[epKey].level = Number(value)
+      } else if (clusterId === 0x0008 && attrId === 0x0001) {
+        device.state[epKey].level_min = Number(value)
+      } else if (clusterId === 0x0008 && attrId === 0x0002) {
+        device.state[epKey].level_max = Number(value)
       } else if (clusterId === 0x0300 && attrId === 0x4002) {
-        // ColorCapabilities bitmask (uint16)
         const bitmask = Number(value)
         device.state[epKey].color_caps = {
           hs: !!(bitmask & 0x01),
@@ -167,10 +170,16 @@ function handleStateChange(data: any) {
           ct: !!(bitmask & 0x20),
           color_loop: !!(bitmask & 0x08),
         }
-      } else if (clusterId === 0x0300) {
-        if (attrId === 0x0000) device.state[epKey].hue = Number(value)
-        else if (attrId === 0x0001) device.state[epKey].sat = Number(value)
-        else device.state[epKey].color = value
+      } else if (clusterId === 0x0300 && attrId === 0x0000) {
+        device.state[epKey].hue = Number(value)
+      } else if (clusterId === 0x0300 && attrId === 0x0001) {
+        device.state[epKey].sat = Number(value)
+      } else if (clusterId === 0x0300 && attrId === 0x0003) {
+        device.state[epKey].x = Number(value) / 65535
+      } else if (clusterId === 0x0300 && attrId === 0x0004) {
+        device.state[epKey].y = Number(value) / 65535
+      } else if (clusterId === 0x0300 && attrId === 0x0007) {
+        device.state[epKey].ct = Number(value)
       }
     }
   } else {
@@ -373,7 +382,17 @@ async function pollDevices() {
         await api.readAttr(device.ieee, epId, '0x0006', '0x0000').catch(() => {})
       }
       if (clusters.includes(8)) {
-        await api.readAttr(device.ieee, epId, '0x0008', '0x0000').catch(() => {})
+        await api.readAttr(device.ieee, epId, '0x0008', '0x0000').catch(() => {}) // CurrentLevel
+        await api.readAttr(device.ieee, epId, '0x0008', '0x0001').catch(() => {}) // MinLevel
+        await api.readAttr(device.ieee, epId, '0x0008', '0x0002').catch(() => {}) // MaxLevel
+      }
+      if (clusters.includes(768)) {
+        await api.readAttr(device.ieee, epId, '0x0300', '0x4002').catch(() => {}) // ColorCapabilities
+        await api.readAttr(device.ieee, epId, '0x0300', '0x0000').catch(() => {}) // CurrentHue
+        await api.readAttr(device.ieee, epId, '0x0300', '0x0001').catch(() => {}) // CurrentSaturation
+        await api.readAttr(device.ieee, epId, '0x0300', '0x0003').catch(() => {}) // CurrentX
+        await api.readAttr(device.ieee, epId, '0x0300', '0x0004').catch(() => {}) // CurrentY
+        await api.readAttr(device.ieee, epId, '0x0300', '0x0007').catch(() => {}) // ColorTemperatureMireds
       }
     }
     if (endpoints.length === 0) {
