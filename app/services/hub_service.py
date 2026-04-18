@@ -94,14 +94,23 @@ class HubService:
             raw_devices = data.get("devices", [])
             mapped: List[Dict[str, Any]] = []
             for d in raw_devices:
+                ep_list = d.get("endpoints", [])
                 mapped.append(
                     {
                         "ieee": d.get("ieee_addr", ""),
                         "name": d.get("name") or "Zigbee Device",
                         "network_addr": d.get("network_addr"),
-                        "endpoints": d.get("endpoints", []),
+                        "endpoints": ep_list,
                         "online": True,
                     }
+                )
+                logger.info(
+                    "device_parsed_from_hub",
+                    ieee=d.get("ieee_addr"),
+                    name=d.get("name"),
+                    endpoint_count=len(ep_list),
+                    endpoints=ep_list,
+                    raw_device_keys=list(d.keys()),
                 )
             self._devices = mapped
             self._spawn_background(self._sync_devices(mapped))
@@ -129,11 +138,20 @@ class HubService:
             for d in devices:
                 ieee = d.get("ieee_addr") or d.get("ieee", "")
                 if not ieee:
+                    logger.warning("sync_devices_skip_no_ieee", device=d)
                     continue
+                endpoints = d.get("endpoints", [])
+                logger.info(
+                    "device_upsert_db",
+                    ieee=ieee,
+                    network_addr=d.get("network_addr"),
+                    endpoint_count=len(endpoints),
+                    endpoints=endpoints,
+                )
                 await repo.upsert(
                     ieee,
                     network_addr=d.get("network_addr"),
-                    endpoints=d.get("endpoints", []),
+                    endpoints=endpoints,
                     online=d.get("online", True),
                 )
             await session.commit()

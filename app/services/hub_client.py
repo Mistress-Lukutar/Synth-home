@@ -1,11 +1,15 @@
 """USB Serial bridge client for talking to the ZigbeeHUB firmware."""
 
 import asyncio
+import json
 from typing import Optional, Dict, Any, Callable
 
 import serial
+import structlog
 
 from app.services.protocol import ProtocolHandler
+
+logger = structlog.get_logger(__name__)
 
 
 class HubClient:
@@ -57,12 +61,14 @@ class HubClient:
             try:
                 chunk = await asyncio.to_thread(self._read_chunk)
                 if chunk:
+                    logger.debug("serial_raw_read", raw_bytes=chunk.decode("utf-8", errors="replace")[:500])
                     messages = self._protocol.feed(chunk)
+                    logger.debug("serial_parsed_messages", message_count=len(messages))
                     self._protocol.dispatch(messages)
                 else:
                     await asyncio.sleep(0.01)
             except Exception as exc:
-                print(f"[HubClient] Read error: {exc}")
+                logger.exception("serial_read_error")
                 await asyncio.sleep(1)
 
     def _read_chunk(self) -> bytes:
@@ -75,9 +81,8 @@ class HubClient:
         """Send a JSON payload to the hub."""
         if self._ser is None or not self._ser.is_open:
             raise RuntimeError("Serial port is not open")
-        import json
-
         line = json.dumps(payload) + "\n"
+        logger.info("serial_raw_write", payload=payload)
         await asyncio.to_thread(self._ser.write, line.encode())
 
     async def fetch_devices(self) -> list:
