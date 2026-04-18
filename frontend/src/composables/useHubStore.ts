@@ -92,8 +92,8 @@ function handleSSEMessage(msg: any) {
     if (evt === 'state_change') {
       handleStateChange(data)
     }
-    if (evt === 'on_ack') {
-      handleOnAck(data)
+    if (evt && evt.endsWith('_ack')) {
+      handleAck(data)
     }
     if (evt === 'command_status') {
       handleCommandStatus(data)
@@ -109,16 +109,31 @@ function handleSSEMessage(msg: any) {
   }
 }
 
-function handleOnAck(data: any) {
+function handleAck(data: any) {
+  const evt = data.evt || data.event || ''
+  const action = evt.replace('_ack', '')
   const ieee = data.ieee
   const ok = data.ok
-  if (!ieee || ok === undefined) return
+  const value = data.value
+  const endpoint = data.endpoint
+  if (!ieee) return
+
   const device = state.devices.find(d => d.ieee === ieee)
-  if (device) {
-    if (!device.state) device.state = {}
-    const epKey = '1'
-    if (!device.state[epKey]) device.state[epKey] = {}
+  if (!device) return
+  if (!device.state) device.state = {}
+  const epKey = String(endpoint || '1')
+  if (!device.state[epKey]) device.state[epKey] = {}
+
+  if (action === 'on') {
     device.state[epKey].on = Boolean(ok)
+  } else if (action === 'off') {
+    device.state[epKey].on = !Boolean(ok)
+  } else if (action === 'toggle') {
+    device.state[epKey].on = Boolean(ok)
+  } else if (action === 'level') {
+    if (value !== undefined) device.state[epKey].level = Number(value)
+  } else if (action === 'color') {
+    if (value !== undefined) device.state[epKey].color = value
   }
 }
 
