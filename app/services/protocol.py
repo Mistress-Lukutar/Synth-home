@@ -25,15 +25,17 @@ class ProtocolHandler:
         """Feed raw bytes into the parser and return complete messages."""
         messages: list[Dict[str, Any]] = []
         self._buffer += chunk.decode("utf-8", errors="ignore")
+        logger.info("protocol_buffer_state", buffer_len=len(self._buffer), has_newline="\n" in self._buffer)
         while "\n" in self._buffer:
             line, self._buffer = self._buffer.split("\n", 1)
             line = line.strip()
             if not line:
+                logger.debug("protocol_empty_line_skipped")
                 continue
             try:
                 data = json.loads(line)
-            except json.JSONDecodeError:
-                logger.debug("protocol_json_parse_failed", line=line[:200])
+            except json.JSONDecodeError as exc:
+                logger.warning("protocol_json_parse_failed", line=line[:400], error=str(exc))
                 continue
             messages.append(data)
         return messages
