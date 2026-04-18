@@ -58,8 +58,11 @@
           <template v-if="hasCluster(ep, 768)">
             <div class="color-mode-row">
               <label class="color-mode-label">Color</label>
-              <select v-model="colorModes[ep.id]" class="color-mode-select" @change="onColorModeChange(ep.id)">
-                <option value="">—</option>
+              <select
+                class="color-mode-select"
+                :value="getState(ep.id, 'color_mode') || ''"
+                @change="(e) => onColorModeChange(ep.id, (e.target as HTMLSelectElement).value)"
+              >
                 <option v-if="colorSupports(ep.id, 'hs')" value="hs">HS</option>
                 <option v-if="colorSupports(ep.id, 'xy')" value="xy">XY</option>
                 <option v-if="colorSupports(ep.id, 'ct')" value="ct">CT</option>
@@ -67,7 +70,7 @@
             </div>
 
             <!-- HS sliders -->
-            <template v-if="colorModes[ep.id] === 'hs'">
+            <template v-if="getState(ep.id, 'color_mode') === 'hs'">
               <div class="slider-row">
                 <label>Hue</label>
                 <input type="range" min="0" max="360" :value="getState(ep.id, 'hue') ?? 0" @change="(e) => setColorHs(ep.id, Number((e.target as HTMLInputElement).value), getState(ep.id, 'sat') ?? 100)" />
@@ -81,7 +84,7 @@
             </template>
 
             <!-- XY sliders -->
-            <template v-if="colorModes[ep.id] === 'xy'">
+            <template v-if="getState(ep.id, 'color_mode') === 'xy'">
               <div class="slider-row">
                 <label>X</label>
                 <input type="range" min="0" max="1" step="0.01" :value="getState(ep.id, 'x') ?? 0.5" @change="(e) => setColorXy(ep.id, Number((e.target as HTMLInputElement).value), getState(ep.id, 'y') ?? 0.5)" />
@@ -95,7 +98,7 @@
             </template>
 
             <!-- CT slider -->
-            <template v-if="colorModes[ep.id] === 'ct'">
+            <template v-if="getState(ep.id, 'color_mode') === 'ct'">
               <div class="slider-row">
                 <label>CT</label>
                 <input type="range" min="153" max="500" :value="getState(ep.id, 'ct') ?? 300" @change="(e) => setCt(ep.id, Number((e.target as HTMLInputElement).value))" />
@@ -113,7 +116,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, reactive } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { useHubStore } from '../composables/useHubStore'
 import * as api from '../api'
 
@@ -123,7 +126,6 @@ const store = useHubStore()
 const editing = ref(false)
 const editName = ref('')
 const inputRef = ref<HTMLInputElement | null>(null)
-const colorModes = reactive<Record<number, string>>({})
 
 const displayName = computed(() => props.device.name || 'Unknown Device')
 
@@ -175,9 +177,9 @@ function colorSupports(epId: number, cap: 'hs' | 'xy' | 'ct' | 'color_loop'): bo
   return !!caps[cap]
 }
 
-function onColorModeChange(epId: number) {
-  // when mode changes, read the relevant attributes to populate sliders
-  const mode = colorModes[epId]
+function onColorModeChange(epId: number, mode: string) {
+  // Just a UI switch — the actual mode on the device is determined by the last command sent
+  // Read relevant attributes to populate sliders for the selected mode
   if (mode === 'hs') {
     api.readAttr(props.device.ieee, epId, '0x0300', '0x0000').catch(() => {}) // hue
     api.readAttr(props.device.ieee, epId, '0x0300', '0x0001').catch(() => {}) // sat
