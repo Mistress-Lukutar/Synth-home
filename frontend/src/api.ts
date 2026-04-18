@@ -44,6 +44,12 @@ export const readAttr = (ieee: string, endpoint: number | undefined, cluster: st
     method: 'POST',
     body: JSON.stringify({ endpoint, cluster, attribute })
   })
+
+export const readAttrBatch = (items: { ieee: string; endpoint?: number; cluster: string; attribute: string }[]) =>
+  api<{correlation_id: string; status: string}[]>('/api/devices/read-attr-batch', {
+    method: 'POST',
+    body: JSON.stringify(items)
+  })
 export const permitJoin = (duration: number) => api<any>('/api/network/permit-join', { method: 'POST', body: JSON.stringify({ duration }) })
 export const listScenarios = () => api<any[]>('/api/scenarios')
 export const createScenario = (payload: any) => api<any>('/api/scenarios', { method: 'POST', body: JSON.stringify(payload) })

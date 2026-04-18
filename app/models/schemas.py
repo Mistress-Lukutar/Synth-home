@@ -56,6 +56,13 @@ class ReadAttrRequest(BaseModel):
     attribute: str = Field(..., description="Attribute ID in hex, e.g. 0x0000")
 
 
+class ReadAttrBatchItem(BaseModel):
+    ieee: str
+    endpoint: Optional[int] = None
+    cluster: str
+    attribute: str
+
+
 class CommandResponse(BaseModel):
     correlation_id: str
     status: str = "pending"

@@ -129,7 +129,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.add_middleware(StructuredLoggingMiddleware)
-    app.add_middleware(RateLimitMiddleware, max_requests=30, window_seconds=60)
+    app.add_middleware(RateLimitMiddleware, max_requests=200, window_seconds=60)
     app.add_middleware(SecurityHeadersMiddleware)
 
     app.mount("/static", StaticFiles(directory="static"), name="static")
