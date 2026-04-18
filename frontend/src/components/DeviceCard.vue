@@ -1,5 +1,5 @@
 <template>
-  <div class="device-card">
+  <div class="device-card" :class="{ offline: device.online === false }">
     <div class="device-info">
       <div class="editable-title">
         <span v-if="!editing" class="title-text" @click="startEdit">{{ displayName }}</span>
@@ -13,6 +13,11 @@
           @keydown.esc="cancel"
           @blur="save"
         />
+        <button class="btn-icon btn-danger" @click="remove" title="Delete device">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="#ff4444">
+            <path d="M3 6h18v2H3zm2 3h14v13H5zm3-5h8v2H8z"/>
+          </svg>
+        </button>
       </div>
       <div class="device-details">
         <span class="device-ieee">{{ device.ieee }}</span>
@@ -116,6 +121,17 @@ async function save() {
   }
 }
 
+async function remove() {
+  if (!confirm(`Delete device ${displayName.value}?`)) return
+  try {
+    await api.deleteDevice(props.device.ieee)
+    store.logEvent(`Device ${displayName.value} deleted`)
+    await store.refreshDevices()
+  } catch (e: any) {
+    store.logEvent('Delete failed: ' + e.message)
+  }
+}
+
 function hasCluster(ep: any, clusterId: number): boolean {
   return (ep.clusters || []).includes(clusterId)
 }
@@ -186,6 +202,24 @@ async function setCt(epId: number, ct: number) {
   transition: all 0.2s;
 }
 .device-card:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.2); }
+.device-card.offline { opacity: 0.6; background: rgba(0,0,0,0.15); border-color: rgba(255,255,255,0.05); }
+.device-card.offline .title-text { color: #888; }
+.device-card.offline .device-details { color: #555; }
+
+.btn-icon {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px;
+  padding: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  margin-left: 4px;
+}
+.btn-icon:hover { background: rgba(255,255,255,0.15); }
+.btn-icon.btn-danger:hover { background: rgba(255,68,68,0.15); border-color: rgba(255,68,68,0.3); }
 
 .device-info { display: flex; flex-direction: column; gap: 4px; }
 .editable-title { display: flex; align-items: center; gap: 8px; cursor: text; }

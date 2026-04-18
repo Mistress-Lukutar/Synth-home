@@ -46,3 +46,10 @@ class DeviceRepository(BaseRepository[Device]):
                 }
             )
         return rows
+
+    async def delete(self, ieee_addr: str) -> bool:
+        device = await self.get_by_ieee(ieee_addr)
+        if device:
+            await self._session.delete(device)
+            return True
+        return False

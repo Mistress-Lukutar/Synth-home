@@ -132,14 +132,17 @@ class HubService:
         )
 
     async def _sync_devices(self, devices: List[Dict[str, Any]]) -> None:
-        """Persist or update device topology in the database."""
+        """Persist or update device topology in the database.
+        Mark devices not present in the hub list as offline."""
         async with async_session() as session:
             repo = DeviceRepository(session)
+            seen_ieees = set()
             for d in devices:
                 ieee = d.get("ieee_addr") or d.get("ieee", "")
                 if not ieee:
                     logger.warning("sync_devices_skip_no_ieee", device=d)
                     continue
+                seen_ieees.add(ieee)
                 endpoints = d.get("endpoints", [])
                 logger.info(
                     "device_upsert_db",
@@ -152,8 +155,16 @@ class HubService:
                     ieee,
                     network_addr=d.get("network_addr"),
                     endpoints=endpoints,
-                    online=d.get("online", True),
+                    online=True,
                 )
+            # Mark missing devices as offline
+            all_devices = await repo.list_with_aliases()
+            for dev in all_devices:
+                if dev["ieee"] not in seen_ieees:
+                    device = await repo.get_by_ieee(dev["ieee"])
+                    if device and device.online:
+                        device.online = False
+                        logger.info("device_marked_offline", ieee=dev["ieee"])
             await session.commit()
 
     async def _handle_command_status(self, data: Dict[str, Any]) -> None:
