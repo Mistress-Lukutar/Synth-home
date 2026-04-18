@@ -60,8 +60,8 @@
               <label class="color-mode-label">Color</label>
               <select
                 class="color-mode-select"
-                :value="getState(ep.id, 'color_mode') || ''"
-                @change="(e) => onColorModeChange(ep.id, (e.target as HTMLSelectElement).value)"
+                v-model="uiColorModes[ep.id]"
+                @change="onColorModeChange(ep.id, uiColorModes[ep.id])"
               >
                 <option v-if="colorSupports(ep.id, 'hs')" value="hs">HS</option>
                 <option v-if="colorSupports(ep.id, 'xy')" value="xy">XY</option>
@@ -70,7 +70,7 @@
             </div>
 
             <!-- HS sliders -->
-            <template v-if="getState(ep.id, 'color_mode') === 'hs'">
+            <template v-if="uiColorModes[ep.id] === 'hs'">
               <div class="slider-row">
                 <label>Hue</label>
                 <input type="range" min="0" max="360" :value="getState(ep.id, 'hue') ?? 0" @change="(e) => setColorHs(ep.id, Number((e.target as HTMLInputElement).value), getState(ep.id, 'sat') ?? 100)" />
@@ -84,7 +84,7 @@
             </template>
 
             <!-- XY sliders -->
-            <template v-if="getState(ep.id, 'color_mode') === 'xy'">
+            <template v-if="uiColorModes[ep.id] === 'xy'">
               <div class="slider-row">
                 <label>X</label>
                 <input type="range" min="0" max="1" step="0.01" :value="getState(ep.id, 'x') ?? 0.5" @change="(e) => setColorXy(ep.id, Number((e.target as HTMLInputElement).value), getState(ep.id, 'y') ?? 0.5)" />
@@ -98,7 +98,7 @@
             </template>
 
             <!-- CT slider -->
-            <template v-if="getState(ep.id, 'color_mode') === 'ct'">
+            <template v-if="uiColorModes[ep.id] === 'ct'">
               <div class="slider-row">
                 <label>CT</label>
                 <input type="range" min="153" max="500" :value="getState(ep.id, 'ct') ?? 300" @change="(e) => setCt(ep.id, Number((e.target as HTMLInputElement).value))" />
@@ -116,7 +116,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, reactive, watch, onMounted } from 'vue'
 import { useHubStore } from '../composables/useHubStore'
 import * as api from '../api'
 
@@ -126,6 +126,17 @@ const store = useHubStore()
 const editing = ref(false)
 const editName = ref('')
 const inputRef = ref<HTMLInputElement | null>(null)
+const uiColorModes = reactive<Record<number, string>>({})
+
+function syncColorModesFromState() {
+  for (const ep of props.device.endpoints || []) {
+    const mode = getState(ep.id, 'color_mode')
+    if (mode) uiColorModes[ep.id] = mode
+  }
+}
+
+onMounted(syncColorModesFromState)
+watch(() => props.device.state, syncColorModesFromState, { deep: true })
 
 const displayName = computed(() => props.device.name || 'Unknown Device')
 
@@ -366,12 +377,16 @@ async function setCt(epId: number, ct: number) {
   letter-spacing: 0.5px;
 }
 .color-mode-select {
-  background: rgba(255,255,255,0.1);
+  background: rgba(0,0,0,0.4);
   border: 1px solid rgba(255,255,255,0.2);
   border-radius: 4px;
   color: #fff;
   padding: 4px 8px;
   font-size: 13px;
+}
+.color-mode-select option {
+  background: #222;
+  color: #fff;
 }
 
 /* Slider rows */
