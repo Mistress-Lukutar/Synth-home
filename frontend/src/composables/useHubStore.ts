@@ -132,6 +132,48 @@ function handleAck(data: any) {
     if (value !== undefined) device.state[epKey].level = Number(value)
   } else if (action === 'color') {
     if (value !== undefined) device.state[epKey].color = value
+  } else if (action === 'read_attr') {
+    const cluster = data.cluster_id ?? (data.cluster ? parseInt(data.cluster, 16) : undefined)
+    const attr = data.attr_id ?? (data.attribute ? parseInt(data.attribute, 16) : undefined)
+    const val = data.value
+    if (cluster !== undefined && attr !== undefined && val !== undefined) {
+      if (cluster === 0x0006 && attr === 0x0000) {
+        device.state[epKey].on = Boolean(val)
+      } else if (cluster === 0x0008 && attr === 0x0000) {
+        device.state[epKey].level = Number(val)
+      } else if (cluster === 0x0008 && attr === 0x0002) {
+        device.state[epKey].level_min = Number(val)
+      } else if (cluster === 0x0008 && attr === 0x0003) {
+        device.state[epKey].level_max = Number(val)
+      } else if (cluster === 0x0300 && attr === 0x0008) {
+        const modeVal = Number(val)
+        if (modeVal === 0) device.state[epKey].color_mode = 'hs'
+        else if (modeVal === 1) device.state[epKey].color_mode = 'xy'
+        else if (modeVal === 2) device.state[epKey].color_mode = 'ct'
+      } else if (cluster === 0x0300 && attr === 0x4002) {
+        const bitmask = Number(val)
+        device.state[epKey].color_caps = {
+          hs: !!(bitmask & 0x01),
+          xy: !!(bitmask & 0x10),
+          ct: !!(bitmask & 0x20),
+          color_loop: !!(bitmask & 0x08),
+        }
+      } else if (cluster === 0x0300 && attr === 0x0000) {
+        device.state[epKey].hue = Number(val)
+      } else if (cluster === 0x0300 && attr === 0x0001) {
+        device.state[epKey].sat = Number(val)
+      } else if (cluster === 0x0300 && attr === 0x0003) {
+        device.state[epKey].x = Number(val)
+      } else if (cluster === 0x0300 && attr === 0x0004) {
+        device.state[epKey].y = Number(val)
+      } else if (cluster === 0x0300 && attr === 0x0007) {
+        device.state[epKey].ct = Number(val)
+      } else if (cluster === 0x0300 && attr === 0x400B) {
+        device.state[epKey].ct_min = Number(val)
+      } else if (cluster === 0x0300 && attr === 0x400C) {
+        device.state[epKey].ct_max = Number(val)
+      }
+    }
   }
 }
 
@@ -180,11 +222,15 @@ function handleStateChange(data: any) {
       } else if (clusterId === 0x0300 && attrId === 0x0001) {
         device.state[epKey].sat = Number(value)
       } else if (clusterId === 0x0300 && attrId === 0x0003) {
-        device.state[epKey].x = Number(value) / 65535
+        device.state[epKey].x = Number(value)
       } else if (clusterId === 0x0300 && attrId === 0x0004) {
-        device.state[epKey].y = Number(value) / 65535
+        device.state[epKey].y = Number(value)
       } else if (clusterId === 0x0300 && attrId === 0x0007) {
         device.state[epKey].ct = Number(value)
+      } else if (clusterId === 0x0300 && attrId === 0x400B) {
+        device.state[epKey].ct_min = Number(value)
+      } else if (clusterId === 0x0300 && attrId === 0x400C) {
+        device.state[epKey].ct_max = Number(value)
       }
     }
   } else {
@@ -292,7 +338,9 @@ async function connect(port: string): Promise<boolean> {
       state.currentPort = port
       logEvent(`Connected: ${port}`)
       startSSE()
-      await refreshDevices()
+      await loadDevices()      // quick cache from DB
+      await refreshDevices()   // sync with hub
+      await pollDevices()      // read attributes
       return true
     } else {
       logEvent(data.error || 'Connection failed')
@@ -315,24 +363,27 @@ async function disconnect() {
   logEvent('Disconnected')
 }
 
-async function refreshDevices() {
-  if (!state.isConnected || state.refreshingDevices) return
-  state.refreshingDevices = true
+async function loadDevices() {
   try {
     const data = await api.listDevices()
     if (data.success) {
       state.devices = data.devices || []
     }
-    // Request ColorCapabilities (0x0300/0x4002) for every endpoint with Color Control cluster
-    for (const device of state.devices) {
-      for (const ep of device.endpoints || []) {
-        if ((ep.clusters || []).includes(768)) {
-          api.readAttr(device.ieee, ep.id, '0x0300', '0x4002').catch(() => {})
-        }
-      }
-    }
   } catch (e: any) {
     logEvent('Load devices error: ' + e.message)
+  }
+}
+
+async function refreshDevices() {
+  if (!state.isConnected || state.refreshingDevices) return
+  state.refreshingDevices = true
+  try {
+    const data = await api.refreshDevices()
+    if (data.success) {
+      state.devices = data.devices || []
+    }
+  } catch (e: any) {
+    logEvent('Refresh devices error: ' + e.message)
   } finally {
     state.refreshingDevices = false
   }
@@ -345,7 +396,9 @@ async function restoreConnection() {
       state.isConnected = true
       state.currentPort = data.port
       startSSE()
-      await refreshDevices()
+      await loadDevices()   // quick cache from DB
+      // Fire-and-forget poll to fill state via read_attr_ack
+      setTimeout(() => pollDevices(), 300)
     }
   } catch {
     // stay disconnected
@@ -400,6 +453,8 @@ async function pollDevices() {
         items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0003' })
         items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0004' })
         items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0007' })
+        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x400B' })
+        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x400C' })
       }
     }
     if (endpoints.length === 0) {
@@ -421,6 +476,7 @@ export function useHubStore() {
     logEvent,
     connect,
     disconnect,
+    loadDevices,
     refreshDevices,
     refreshPorts,
     restoreConnection,

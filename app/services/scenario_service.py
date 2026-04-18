@@ -51,7 +51,7 @@ class ScenarioService:
                     "next_run_time": self._next_run(scenario.id),
                 },
             )
-            await self._run_action(session, scenario)
+            await self._run_actions(session, scenario)
 
     async def evaluate_device_event(self, event_data: dict) -> None:
         """Check scenarios with trigger_type=='device_event' against incoming event."""
@@ -75,7 +75,7 @@ class ScenarioService:
                         "next_run_time": self._next_run(scenario.id),
                     },
                 )
-                await self._run_action(session, scenario)
+                await self._run_actions(session, scenario)
 
     def _match_event(self, scenario: Scenario, event_data: dict) -> bool:
         config = scenario.trigger_data or {}
@@ -88,7 +88,7 @@ class ScenarioService:
                 return False
         return True
 
-    async def _run_action(self, session: AsyncSession, scenario: Scenario) -> None:
+    async def _run_actions(self, session: AsyncSession, scenario: Scenario) -> None:
         if not self._hub_service.is_connected():
             logger.warning("scenario_skipped_not_connected", scenario_id=scenario.id)
             await self._publish(
@@ -102,40 +102,51 @@ class ScenarioService:
             )
             return
 
-        config = scenario.action_data or {}
+        actions = scenario.actions or []
+        if not actions:
+            logger.warning("scenario_no_actions", scenario_id=scenario.id)
+            return
 
-        if scenario.action_type == "command":
-            ieee = config.get("ieee", "")
-            action = config.get("action", "toggle")
-            params = config.get("params", {})
-            try:
-                await self._hub_service.send_command(
-                    ieee, action, params if params else None
-                )
-                logger.info("scenario_executed", scenario_id=scenario.id)
-                await self._publish(
-                    "scenario_executed",
-                    {
-                        "scenario_id": scenario.id,
-                        "scenario_name": scenario.name,
-                        "action": action,
-                        "ieee": ieee,
-                        "next_run_time": self._next_run(scenario.id),
-                    },
-                )
-            except Exception as exc:
-                logger.warning(
-                    "scenario_execution_failed", scenario_id=scenario.id, error=str(exc)
-                )
-                await self._publish(
-                    "scenario_execution_failed",
-                    {
-                        "scenario_id": scenario.id,
-                        "scenario_name": scenario.name,
-                        "error": str(exc),
-                        "next_run_time": self._next_run(scenario.id),
-                    },
-                )
+        for idx, action in enumerate(actions):
+            action_type = action.get("action_type", "command")
+            config = action.get("action_data", {})
+
+            if action_type == "command":
+                ieee = config.get("ieee", "")
+                cmd_action = config.get("action", "toggle")
+                params = config.get("params", {})
+                try:
+                    await self._hub_service.send_command(
+                        ieee, cmd_action, params if params else None
+                    )
+                    logger.info("scenario_action_executed", scenario_id=scenario.id, action_index=idx)
+                except Exception as exc:
+                    logger.warning(
+                        "scenario_action_failed",
+                        scenario_id=scenario.id,
+                        action_index=idx,
+                        error=str(exc),
+                    )
+                    await self._publish(
+                        "scenario_execution_failed",
+                        {
+                            "scenario_id": scenario.id,
+                            "scenario_name": scenario.name,
+                            "error": str(exc),
+                            "next_run_time": self._next_run(scenario.id),
+                        },
+                    )
+                    return  # Stop on first failure
+
+        await self._publish(
+            "scenario_executed",
+            {
+                "scenario_id": scenario.id,
+                "scenario_name": scenario.name,
+                "actions_count": len(actions),
+                "next_run_time": self._next_run(scenario.id),
+            },
+        )
 
     async def _publish(self, event_type: str, payload: dict) -> None:
         await self._event_bus.publish(event_type, payload)

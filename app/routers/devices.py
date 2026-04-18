@@ -16,11 +16,9 @@ router = APIRouter()
 
 @router.get("/api/devices", response_model=DevicesResponse)
 async def list_devices(
-    service: Annotated[HubService, Depends(require_connection)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    """Fetch devices from hub (syncs to DB) and return the persisted merged view."""
-    await service.fetch_devices()
+    """Return cached devices from DB (fast, no hub call)."""
     repo = DeviceRepository(db)
     devices = await repo.list_with_aliases()
     import structlog
@@ -32,6 +30,18 @@ async def list_devices(
             endpoint_count=len(d.get("endpoints") or []),
             endpoints=d.get("endpoints"),
         )
+    return {"success": True, "devices": devices}
+
+
+@router.post("/api/devices/refresh", response_model=DevicesResponse)
+async def refresh_devices(
+    service: Annotated[HubService, Depends(require_connection)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """Force refresh device list from hub and return updated devices."""
+    await service.fetch_devices()
+    repo = DeviceRepository(db)
+    devices = await repo.list_with_aliases()
     return {"success": True, "devices": devices}
 
 

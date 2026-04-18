@@ -255,6 +255,20 @@ class HubService:
                 elif action == "color":
                     if value is not None:
                         state[ep_key]["color"] = value
+                elif action == "read_attr":
+                    cluster_id = data.get("cluster_id")
+                    attr_id = data.get("attr_id")
+                    val = data.get("value")
+                    if cluster_id is None and attr_id is None:
+                        cluster_hex = data.get("cluster", "")
+                        attr_hex = data.get("attribute", "")
+                        try:
+                            cluster_id = int(cluster_hex, 16) if isinstance(cluster_hex, str) and cluster_hex.startswith("0x") else int(cluster_hex) if cluster_hex else None
+                            attr_id = int(attr_hex, 16) if isinstance(attr_hex, str) and attr_hex.startswith("0x") else int(attr_hex) if attr_hex else None
+                        except (ValueError, TypeError):
+                            pass
+                    if cluster_id is not None and attr_id is not None and val is not None:
+                        await self._update_device_state(ieee, endpoint_id, cluster_id, attr_id, val)
 
                 device.state = state
                 await session.commit()
@@ -303,13 +317,38 @@ class HubService:
                     state[ep_key] = {}
                 if cluster_id == 6 and attr_id == 0:
                     state[ep_key]["on"] = bool(value)
-                elif cluster_id == 8 and attr_id == 0:
-                    state[ep_key]["level"] = int(value)
+                elif cluster_id == 8:
+                    if attr_id == 0:
+                        state[ep_key]["level"] = int(value)
+                    elif attr_id == 2:
+                        state[ep_key]["level_min"] = int(value)
+                    elif attr_id == 3:
+                        state[ep_key]["level_max"] = int(value)
                 elif cluster_id == 768:
                     if attr_id == 0:
                         state[ep_key]["hue"] = int(value)
                     elif attr_id == 1:
                         state[ep_key]["sat"] = int(value)
+                    elif attr_id == 3:
+                        state[ep_key]["x"] = int(value)
+                    elif attr_id == 4:
+                        state[ep_key]["y"] = int(value)
+                    elif attr_id == 7:
+                        state[ep_key]["ct"] = int(value)
+                    elif attr_id == 8:
+                        state[ep_key]["color_mode"] = int(value)
+                    elif attr_id == 0x4002:
+                        bitmask = int(value)
+                        state[ep_key]["color_caps"] = {
+                            "hs": bool(bitmask & 0x01),
+                            "xy": bool(bitmask & 0x10),
+                            "ct": bool(bitmask & 0x20),
+                            "color_loop": bool(bitmask & 0x08),
+                        }
+                    elif attr_id == 0x400B:
+                        state[ep_key]["ct_min"] = int(value)
+                    elif attr_id == 0x400C:
+                        state[ep_key]["ct_max"] = int(value)
                     else:
                         state[ep_key]["color"] = value
                 device.state = state
