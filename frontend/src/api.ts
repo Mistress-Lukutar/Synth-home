@@ -19,6 +19,12 @@ export const sendCommand = (ieee: string, action: string, endpoint?: number, par
     method: 'POST',
     body: JSON.stringify({ action, endpoint, params })
   })
+
+export const sendColorCt = (ieee: string, ct: number, endpoint?: number) =>
+  api<{correlation_id: string; status: string}>(`/api/devices/${ieee}/command`, {
+    method: 'POST',
+    body: JSON.stringify({ action: 'color_ct', endpoint, params: { ct } })
+  })
 export const renameDevice = (ieee: string, name: string) => api<any>(`/api/devices/${ieee}/rename`, { method: 'PATCH', body: JSON.stringify({ name }) })
 export const deleteDevice = (ieee: string) => api<any>(`/api/devices/${ieee}`, { method: 'DELETE' })
 export const readAttr = (ieee: string, endpoint: number | undefined, cluster: string, attribute: string) =>
