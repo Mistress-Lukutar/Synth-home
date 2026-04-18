@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import require_connection, get_db
-from app.models.schemas import CommandRequest, CommandResponse, DevicesResponse, RenameRequest, RenameResponse, StatusResponse
+from app.models.schemas import CommandRequest, CommandResponse, DevicesResponse, ReadAttrRequest, RenameRequest, RenameResponse, StatusResponse
 from app.repositories.device import DeviceRepository
 from app.repositories.device_alias import DeviceAliasRepository
 from app.services.hub_service import HubService
@@ -59,6 +59,17 @@ async def rename_device(
     await repo.upsert(ieee, req.name)
     await db.commit()
     return {"success": True, "ieee": ieee, "name": req.name}
+
+
+@router.post("/api/devices/{ieee}/read-attr", status_code=status.HTTP_202_ACCEPTED, response_model=CommandResponse)
+async def read_device_attr(
+    ieee: str,
+    req: ReadAttrRequest,
+    service: Annotated[HubService, Depends(require_connection)],
+) -> CommandResponse:
+    """Read a Zigbee cluster attribute from a device."""
+    result = await service.read_attr(ieee, req.endpoint, req.cluster, req.attribute)
+    return CommandResponse(correlation_id=result["correlation_id"], status=result["status"])
 
 
 @router.delete("/api/devices/{ieee}", response_model=StatusResponse)

@@ -50,6 +50,12 @@ class RenameResponse(BaseModel):
     name: str
 
 
+class ReadAttrRequest(BaseModel):
+    endpoint: Optional[int] = None
+    cluster: str = Field(..., description="Cluster ID in hex, e.g. 0x0006")
+    attribute: str = Field(..., description="Attribute ID in hex, e.g. 0x0000")
+
+
 class CommandResponse(BaseModel):
     correlation_id: str
     status: str = "pending"

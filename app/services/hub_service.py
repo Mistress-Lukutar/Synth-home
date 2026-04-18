@@ -67,6 +67,15 @@ class HubService:
         logger.info("command_sent", ieee=ieee, action=action, correlation_id=result.get("correlation_id"))
         return result
 
+    async def read_attr(
+        self, ieee: str, endpoint: Optional[int], cluster: str, attribute: str
+    ) -> Dict[str, Any]:
+        if not self.is_connected():
+            raise HubConnectionError()
+        result = await self._client.read_attr(ieee, endpoint, cluster, attribute)
+        logger.info("read_attr_sent", ieee=ieee, endpoint=endpoint, cluster=cluster, attribute=attribute, correlation_id=result.get("correlation_id"))
+        return result
+
     async def permit_join(self, duration: int) -> Dict[str, Any]:
         if not self.is_connected():
             raise HubConnectionError()
@@ -117,6 +126,9 @@ class HubService:
 
         if evt == "command_status":
             self._spawn_background(self._handle_command_status(data))
+
+        if evt == "on_ack":
+            self._spawn_background(self._handle_on_ack(data))
 
         if evt == "state_change":
             self._spawn_background(self._handle_state_change(data))
@@ -207,15 +219,58 @@ class HubService:
         except Exception:
             logger.exception("command_status_db_update_failed")
 
-    async def _handle_state_change(self, data: Dict[str, Any]) -> None:
-        """Merge attribute report into device state."""
-        ieee = data.get("ieee_addr")
-        endpoint_id = data.get("endpoint")
-        cluster_id = data.get("cluster_id")
-        attr_id = data.get("attr_id")
-        value = data.get("value")
-        if not ieee or cluster_id is None or attr_id is None or value is None:
+    async def _handle_on_ack(self, data: Dict[str, Any]) -> None:
+        """Handle on_ack events — update device on/off state."""
+        ieee = data.get("ieee")
+        ok = data.get("ok")
+        if not ieee or ok is None:
             return
+        try:
+            async with async_session() as session:
+                repo = DeviceRepository(session)
+                device = await repo.get_by_ieee(ieee)
+                if not device:
+                    return
+                state = device.state or {}
+                # on_ack doesn't specify endpoint — assume EP 1 for simple devices
+                ep_key = "1"
+                if ep_key not in state:
+                    state[ep_key] = {}
+                state[ep_key]["on"] = bool(ok)
+                device.state = state
+                await session.commit()
+        except Exception:
+            logger.exception("on_ack_db_update_failed")
+
+    async def _handle_state_change(self, data: Dict[str, Any]) -> None:
+        """Merge attribute report into device state. Handles both old format and new changes[] array."""
+        ieee = data.get("ieee_addr")
+        if not ieee:
+            return
+
+        changes = data.get("changes", [])
+        if changes:
+            # New format with changes array
+            for change in changes:
+                cluster_hex = change.get("cluster", "")
+                attr_hex = change.get("attribute", "")
+                value = change.get("value")
+                try:
+                    cluster_id = int(cluster_hex, 16) if isinstance(cluster_hex, str) and cluster_hex.startswith("0x") else int(cluster_hex)
+                    attr_id = int(attr_hex, 16) if isinstance(attr_hex, str) and attr_hex.startswith("0x") else int(attr_hex)
+                except (ValueError, TypeError):
+                    continue
+                await self._update_device_state(ieee, None, cluster_id, attr_id, value)
+        else:
+            # Old flat format
+            endpoint_id = data.get("endpoint")
+            cluster_id = data.get("cluster_id")
+            attr_id = data.get("attr_id")
+            value = data.get("value")
+            if cluster_id is not None and attr_id is not None and value is not None:
+                await self._update_device_state(ieee, endpoint_id, cluster_id, attr_id, value)
+
+    async def _update_device_state(self, ieee: str, endpoint_id: Optional[int], cluster_id: int, attr_id: int, value: Any) -> None:
         try:
             async with async_session() as session:
                 repo = DeviceRepository(session)
@@ -228,14 +283,20 @@ class HubService:
                     state[ep_key] = {}
                 if cluster_id == 6 and attr_id == 0:
                     state[ep_key]["on"] = bool(value)
-                elif cluster_id == 8:
+                elif cluster_id == 8 and attr_id == 0:
                     state[ep_key]["level"] = int(value)
                 elif cluster_id == 768:
-                    state[ep_key]["color"] = value
+                    if attr_id == 0:
+                        state[ep_key]["hue"] = int(value)
+                    elif attr_id == 1:
+                        state[ep_key]["sat"] = int(value)
+                    else:
+                        state[ep_key]["color"] = value
                 device.state = state
                 await session.commit()
+                logger.info("device_state_updated", ieee=ieee, ep=ep_key, cluster=cluster_id, attr=attr_id, value=value)
         except Exception:
-            logger.exception("state_change_db_update_failed")
+            logger.exception("device_state_update_failed")
 
     def _spawn_background(self, coro: asyncio.coroutines) -> None:
         """Spawn a background task and keep a weak reference for cleanup."""
