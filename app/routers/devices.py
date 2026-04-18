@@ -59,3 +59,21 @@ async def rename_device(
     await repo.upsert(ieee, req.name)
     await db.commit()
     return {"success": True, "ieee": ieee, "name": req.name}
+
+
+@router.delete("/api/devices/{ieee}", response_model=StatusResponse)
+async def delete_device(
+    ieee: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> StatusResponse:
+    """Remove a device and its alias from the database."""
+    repo = DeviceRepository(db)
+    deleted = await repo.delete(ieee)
+    if deleted:
+        alias_repo = DeviceAliasRepository(db)
+        alias = await alias_repo.get_by_ieee(ieee)
+        if alias:
+            await db.delete(alias)
+        await db.commit()
+        return StatusResponse(success=True)
+    return StatusResponse(success=False, error="Device not found")

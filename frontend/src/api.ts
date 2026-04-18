@@ -20,6 +20,7 @@ export const sendCommand = (ieee: string, action: string, endpoint?: number, par
     body: JSON.stringify({ action, endpoint, params })
   })
 export const renameDevice = (ieee: string, name: string) => api<any>(`/api/devices/${ieee}/rename`, { method: 'PATCH', body: JSON.stringify({ name }) })
+export const deleteDevice = (ieee: string) => api<any>(`/api/devices/${ieee}`, { method: 'DELETE' })
 export const permitJoin = (duration: number) => api<any>('/api/network/permit-join', { method: 'POST', body: JSON.stringify({ duration }) })
 export const listScenarios = () => api<any[]>('/api/scenarios')
 export const createScenario = (payload: any) => api<any>('/api/scenarios', { method: 'POST', body: JSON.stringify(payload) })
