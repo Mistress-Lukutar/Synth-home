@@ -4,7 +4,7 @@
       <div class="control-panel">
         <div class="panel-header">
           <h2 class="panel-title">Devices</h2>
-          <button class="btn btn-secondary btn-small" @click="store.refreshDevices" :disabled="!store.state.isConnected">Refresh</button>
+          <button class="btn btn-secondary btn-small" @click="onRefresh" :disabled="!store.state.isConnected">Refresh</button>
         </div>
         <div class="device-cards-container">
           <div v-if="store.state.devices.length === 0" class="device-empty">{{ store.state.isConnected ? 'No devices found' : 'Not connected' }}</div>
@@ -65,6 +65,11 @@ import DeviceCard from './DeviceCard.vue'
 import EventLog from './EventLog.vue'
 
 const store = useHubStore()
+
+async function onRefresh() {
+  await store.refreshDevices()
+  await store.pollDevices()
+}
 
 async function doPermitJoin() {
   if (!store.state.isConnected) return
