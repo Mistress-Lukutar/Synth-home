@@ -127,8 +127,8 @@ class HubService:
         if evt == "command_status":
             self._spawn_background(self._handle_command_status(data))
 
-        if evt == "on_ack":
-            self._spawn_background(self._handle_on_ack(data))
+        if evt and evt.endswith("_ack"):
+            self._spawn_background(self._handle_ack(data, evt))
 
         if evt == "state_change":
             self._spawn_background(self._handle_state_change(data))
@@ -219,12 +219,15 @@ class HubService:
         except Exception:
             logger.exception("command_status_db_update_failed")
 
-    async def _handle_on_ack(self, data: Dict[str, Any]) -> None:
-        """Handle on_ack events — update device on/off state."""
+    async def _handle_ack(self, data: Dict[str, Any], evt: str) -> None:
+        """Handle *_ack events (on_ack, off_ack, toggle_ack, level_ack, color_ack, etc.)."""
         ieee = data.get("ieee")
         ok = data.get("ok")
-        if not ieee or ok is None:
+        value = data.get("value")
+        endpoint_id = data.get("endpoint")
+        if not ieee:
             return
+        action = evt.replace("_ack", "")
         try:
             async with async_session() as session:
                 repo = DeviceRepository(session)
@@ -232,15 +235,32 @@ class HubService:
                 if not device:
                     return
                 state = device.state or {}
-                # on_ack doesn't specify endpoint — assume EP 1 for simple devices
-                ep_key = "1"
+                ep_key = str(endpoint_id or "1")
                 if ep_key not in state:
                     state[ep_key] = {}
-                state[ep_key]["on"] = bool(ok)
+
+                if action in ("on", "off", "toggle"):
+                    if ok is not None:
+                        if action == "on":
+                            state[ep_key]["on"] = bool(ok)
+                        elif action == "off":
+                            state[ep_key]["on"] = not bool(ok)
+                        elif action == "toggle":
+                            state[ep_key]["on"] = bool(ok)
+                elif action == "level":
+                    if value is not None:
+                        state[ep_key]["level"] = int(value)
+                    elif ok is not None:
+                        state[ep_key]["level"] = state[ep_key].get("level", 128)
+                elif action == "color":
+                    if value is not None:
+                        state[ep_key]["color"] = value
+
                 device.state = state
                 await session.commit()
+                logger.info("ack_state_updated", ieee=ieee, action=action, ep=ep_key, ok=ok, value=value)
         except Exception:
-            logger.exception("on_ack_db_update_failed")
+            logger.exception("ack_db_update_failed")
 
     async def _handle_state_change(self, data: Dict[str, Any]) -> None:
         """Merge attribute report into device state. Handles both old format and new changes[] array."""
