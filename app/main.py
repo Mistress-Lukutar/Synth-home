@@ -87,6 +87,7 @@ def create_app() -> FastAPI:
             "hub_connected",
             "hub_disconnected",
             "hub_message",
+            "hub_serial",
             "scenario_triggered",
             "scenario_executed",
             "scenario_execution_failed",

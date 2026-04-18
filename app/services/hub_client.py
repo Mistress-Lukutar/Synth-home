@@ -15,12 +15,13 @@ logger = structlog.get_logger(__name__)
 class HubClient:
     """Async wrapper around pyserial. Delegates framing/protocol to ProtocolHandler."""
 
-    def __init__(self, protocol: ProtocolHandler) -> None:
+    def __init__(self, protocol: ProtocolHandler, event_bus: Optional[Any] = None) -> None:
         self._ser: Optional[serial.Serial] = None
         self._reader_task: Optional[asyncio.Task] = None
         self._port: Optional[str] = None
         self._running = False
         self._protocol = protocol
+        self._event_bus = event_bus
 
     def set_on_message(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         self._protocol.set_on_message(callback)
@@ -64,6 +65,9 @@ class HubClient:
                     logger.debug("serial_raw_read", raw_bytes=chunk.decode("utf-8", errors="replace")[:500])
                     messages = self._protocol.feed(chunk)
                     logger.debug("serial_parsed_messages", message_count=len(messages))
+                    if self._event_bus:
+                        for msg in messages:
+                            await self._event_bus.publish("hub_serial", {"direction": "rx", "payload": msg})
                     self._protocol.dispatch(messages)
                 else:
                     await asyncio.sleep(0.01)
@@ -83,6 +87,8 @@ class HubClient:
             raise RuntimeError("Serial port is not open")
         line = json.dumps(payload) + "\n"
         logger.info("serial_raw_write", payload=payload)
+        if self._event_bus:
+            await self._event_bus.publish("hub_serial", {"direction": "tx", "payload": payload})
         await asyncio.to_thread(self._ser.write, line.encode())
 
     async def fetch_devices(self) -> list:
