@@ -162,6 +162,11 @@ function handleStateChange(data: any) {
         device.state[epKey].level_min = Number(value)
       } else if (clusterId === 0x0008 && attrId === 0x0003) {
         device.state[epKey].level_max = Number(value)
+      } else if (clusterId === 0x0300 && attrId === 0x0008) {
+        const modeVal = Number(value)
+        if (modeVal === 0) device.state[epKey].color_mode = 'hs'
+        else if (modeVal === 1) device.state[epKey].color_mode = 'xy'
+        else if (modeVal === 2) device.state[epKey].color_mode = 'ct'
       } else if (clusterId === 0x0300 && attrId === 0x4002) {
         const bitmask = Number(value)
         device.state[epKey].color_caps = {
@@ -388,6 +393,7 @@ async function pollDevices() {
       }
       if (clusters.includes(768)) {
         await api.readAttr(device.ieee, epId, '0x0300', '0x4002').catch(() => {}) // ColorCapabilities
+        await api.readAttr(device.ieee, epId, '0x0300', '0x0008').catch(() => {}) // ColorMode
         await api.readAttr(device.ieee, epId, '0x0300', '0x0000').catch(() => {}) // CurrentHue
         await api.readAttr(device.ieee, epId, '0x0300', '0x0001').catch(() => {}) // CurrentSaturation
         await api.readAttr(device.ieee, epId, '0x0300', '0x0003').catch(() => {}) // CurrentX
