@@ -46,45 +46,67 @@
           <div v-if="hasCluster(ep, 8)" class="level-control">
             <input
               type="range"
-              min="0"
-              max="255"
-              :value="getState(ep.id, 'level') ?? 128"
+              :min="getState(ep.id, 'level_min') ?? 0"
+              :max="getState(ep.id, 'level_max') ?? 255"
+              :value="getState(ep.id, 'level') ?? (getState(ep.id, 'level_max') ?? 255) / 2"
               @change="(e) => setLevel(ep.id, Number((e.target as HTMLInputElement).value))"
               :disabled="isPending(ep.id, 'level')"
             />
           </div>
 
-          <!-- Color control (cluster 0x0300 = 768) -->
+          <!-- Color mode selector (cluster 0x0300 = 768) -->
           <template v-if="hasCluster(ep, 768)">
-            <div class="color-mode-select" v-if="colorSupports(ep.id, 'hs') || colorSupports(ep.id, 'xy')">
-              <select v-model="colorModes[ep.id]">
+            <div class="color-mode-row">
+              <label class="color-mode-label">Color</label>
+              <select v-model="colorModes[ep.id]" class="color-mode-select" @change="onColorModeChange(ep.id)">
+                <option value="">—</option>
                 <option v-if="colorSupports(ep.id, 'hs')" value="hs">HS</option>
                 <option v-if="colorSupports(ep.id, 'xy')" value="xy">XY</option>
+                <option v-if="colorSupports(ep.id, 'ct')" value="ct">CT</option>
               </select>
-              <input
-                type="color"
-                :value="getColorHex(ep.id)"
-                @change="(e) => setColor(ep.id, (e.target as HTMLInputElement).value)"
-                :disabled="isPending(ep.id, 'color')"
-                class="color-picker"
-              />
             </div>
-            <div v-if="colorSupports(ep.id, 'ct')" class="ct-control">
-              <input
-                type="range"
-                min="153"
-                max="500"
-                :value="getState(ep.id, 'ct') ?? 300"
-                @change="(e) => setCt(ep.id, Number((e.target as HTMLInputElement).value))"
-                :disabled="isPending(ep.id, 'color_ct')"
-              />
-              <span class="ct-label">CT</span>
-            </div>
+
+            <!-- HS sliders -->
+            <template v-if="colorModes[ep.id] === 'hs'">
+              <div class="slider-row">
+                <label>Hue</label>
+                <input type="range" min="0" max="360" :value="getState(ep.id, 'hue') ?? 0" @change="(e) => setColorHs(ep.id, Number((e.target as HTMLInputElement).value), getState(ep.id, 'sat') ?? 100)" />
+                <span>{{ getState(ep.id, 'hue') ?? 0 }}</span>
+              </div>
+              <div class="slider-row">
+                <label>Sat</label>
+                <input type="range" min="0" max="100" :value="getState(ep.id, 'sat') ?? 100" @change="(e) => setColorHs(ep.id, getState(ep.id, 'hue') ?? 0, Number((e.target as HTMLInputElement).value))" />
+                <span>{{ getState(ep.id, 'sat') ?? 100 }}%</span>
+              </div>
+            </template>
+
+            <!-- XY sliders -->
+            <template v-if="colorModes[ep.id] === 'xy'">
+              <div class="slider-row">
+                <label>X</label>
+                <input type="range" min="0" max="1" step="0.01" :value="getState(ep.id, 'x') ?? 0.5" @change="(e) => setColorXy(ep.id, Number((e.target as HTMLInputElement).value), getState(ep.id, 'y') ?? 0.5)" />
+                <span>{{ (getState(ep.id, 'x') ?? 0.5).toFixed(2) }}</span>
+              </div>
+              <div class="slider-row">
+                <label>Y</label>
+                <input type="range" min="0" max="1" step="0.01" :value="getState(ep.id, 'y') ?? 0.5" @change="(e) => setColorXy(ep.id, getState(ep.id, 'x') ?? 0.5, Number((e.target as HTMLInputElement).value))" />
+                <span>{{ (getState(ep.id, 'y') ?? 0.5).toFixed(2) }}</span>
+              </div>
+            </template>
+
+            <!-- CT slider -->
+            <template v-if="colorModes[ep.id] === 'ct'">
+              <div class="slider-row">
+                <label>CT</label>
+                <input type="range" min="153" max="500" :value="getState(ep.id, 'ct') ?? 300" @change="(e) => setCt(ep.id, Number((e.target as HTMLInputElement).value))" />
+                <span>{{ getState(ep.id, 'ct') ?? 300 }} mireds</span>
+              </div>
+            </template>
           </template>
         </div>
       </div>
       <div v-if="!(device.endpoints || []).length" class="endpoint-row">
-        <span class="ep-type">No endpoints reported</span>
+        <span class="ep-clusters">No endpoints reported</span>
       </div>
     </div>
   </div>
@@ -147,16 +169,24 @@ function getState(epId: number, key: string): any {
   return state[String(epId)]?.[key]
 }
 
-function getColorHex(epId: number): string {
-  const color = getState(epId, 'color')
-  if (typeof color === 'string' && color.startsWith('#')) return color
-  return '#ffffff'
-}
-
 function colorSupports(epId: number, cap: 'hs' | 'xy' | 'ct' | 'color_loop'): boolean {
   const caps = getState(epId, 'color_caps')
-  if (!caps) return true // show all until caps are known
+  if (!caps) return true // show all options until caps are known
   return !!caps[cap]
+}
+
+function onColorModeChange(epId: number) {
+  // when mode changes, read the relevant attributes to populate sliders
+  const mode = colorModes[epId]
+  if (mode === 'hs') {
+    api.readAttr(props.device.ieee, epId, '0x0300', '0x0000').catch(() => {}) // hue
+    api.readAttr(props.device.ieee, epId, '0x0300', '0x0001').catch(() => {}) // sat
+  } else if (mode === 'xy') {
+    api.readAttr(props.device.ieee, epId, '0x0300', '0x0003').catch(() => {}) // x
+    api.readAttr(props.device.ieee, epId, '0x0300', '0x0004').catch(() => {}) // y
+  } else if (mode === 'ct') {
+    api.readAttr(props.device.ieee, epId, '0x0300', '0x0007').catch(() => {}) // ct
+  }
 }
 
 function isPending(epId: number, action: string): boolean {
@@ -192,9 +222,30 @@ async function setLevel(epId: number, level: number) {
   await sendAndTrack('level', epId, { level })
 }
 
-async function setColor(epId: number, hex: string) {
-  const mode = colorModes[epId] || 'hs'
-  await sendAndTrack('color', epId, { hex, mode })
+async function setColorHs(epId: number, hue: number, sat: number) {
+  try {
+    const result = await api.sendColorHs(props.device.ieee, hue, sat, epId)
+    store.state.pendingCommands.set(result.correlation_id, {
+      ieee: props.device.ieee,
+      endpoint: epId,
+      action: 'color',
+    })
+  } catch (e: any) {
+    store.logEvent('color hs error: ' + e.message)
+  }
+}
+
+async function setColorXy(epId: number, x: number, y: number) {
+  try {
+    const result = await api.sendColorXy(props.device.ieee, x, y, epId)
+    store.state.pendingCommands.set(result.correlation_id, {
+      ieee: props.device.ieee,
+      endpoint: epId,
+      action: 'color',
+    })
+  } catch (e: any) {
+    store.logEvent('color xy error: ' + e.message)
+  }
 }
 
 async function setCt(epId: number, ct: number) {
@@ -226,21 +277,6 @@ async function setCt(epId: number, ct: number) {
 .device-card.offline { opacity: 0.6; background: rgba(0,0,0,0.15); border-color: rgba(255,255,255,0.05); }
 .device-card.offline .title-text { color: #888; }
 .device-card.offline .device-details { color: #555; }
-
-.btn-icon {
-  background: rgba(255,255,255,0.05);
-  border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 6px;
-  padding: 4px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s;
-  margin-left: 4px;
-}
-.btn-icon:hover { background: rgba(255,255,255,0.15); }
-.btn-icon.btn-danger:hover { background: rgba(255,68,68,0.15); border-color: rgba(255,68,68,0.3); }
 
 .device-info { display: flex; flex-direction: column; gap: 4px; }
 .editable-title { display: flex; align-items: center; gap: 8px; cursor: text; }
@@ -279,16 +315,7 @@ async function setCt(epId: number, ct: number) {
 .ep-header { display: flex; align-items: center; gap: 8px; }
 .ep-label { font-size: 0.75rem; text-transform: uppercase; color: #888; letter-spacing: 0.5px; }
 .ep-clusters { font-size: 0.8rem; color: #aaa; font-family: 'SF Mono', Monaco, monospace; }
-.color-mode-select { display: flex; align-items: center; gap: 8px; }
-.color-mode-select select {
-  background: rgba(255,255,255,0.1);
-  border: 1px solid rgba(255,255,255,0.2);
-  border-radius: 4px;
-  color: #fff;
-  padding: 4px 8px;
-  font-size: 12px;
-}
-.ep-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.ep-controls { display: flex; flex-direction: column; gap: 8px; }
 
 /* Toggle Switch */
 .toggle-switch {
@@ -320,26 +347,72 @@ async function setCt(epId: number, ct: number) {
 
 /* Level slider */
 .level-control input[type="range"] {
-  width: 120px;
+  width: 100%;
   accent-color: #00ff88;
 }
 
-/* Color picker */
-.color-control { display: flex; gap: 10px; align-items: center; }
-.color-picker {
-  width: 36px;
-  height: 36px;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  background: none;
+/* Color mode row */
+.color-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
-.ct-control { display: flex; align-items: center; gap: 6px; }
-.ct-control input[type="range"] { width: 80px; accent-color: #ffaa00; }
-.ct-label { font-size: 0.7rem; color: #888; }
+.color-mode-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: #888;
+  letter-spacing: 0.5px;
+}
+.color-mode-select {
+  background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 4px;
+  color: #fff;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+/* Slider rows */
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.slider-row label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: #888;
+  width: 30px;
+  flex-shrink: 0;
+}
+.slider-row input[type="range"] {
+  flex: 1;
+  accent-color: #00ff88;
+}
+.slider-row span {
+  font-size: 0.8rem;
+  color: #aaa;
+  width: 60px;
+  text-align: right;
+  font-family: 'SF Mono', Monaco, monospace;
+}
+
+.btn-icon {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px;
+  padding: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  margin-left: 4px;
+}
+.btn-icon:hover { background: rgba(255,255,255,0.15); }
+.btn-icon.btn-danger:hover { background: rgba(255,68,68,0.15); border-color: rgba(255,68,68,0.3); }
 
 @media (max-width: 768px) {
   .device-card { padding: 10px 12px; }
-  .ep-controls { flex-direction: column; align-items: flex-start; }
 }
 </style>

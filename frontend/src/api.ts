@@ -25,6 +25,18 @@ export const sendColorCt = (ieee: string, ct: number, endpoint?: number) =>
     method: 'POST',
     body: JSON.stringify({ action: 'color_ct', endpoint, params: { ct } })
   })
+
+export const sendColorHs = (ieee: string, hue: number, sat: number, endpoint?: number) =>
+  api<{correlation_id: string; status: string}>(`/api/devices/${ieee}/command`, {
+    method: 'POST',
+    body: JSON.stringify({ action: 'color', endpoint, params: { mode: 'hs', hue, sat } })
+  })
+
+export const sendColorXy = (ieee: string, x: number, y: number, endpoint?: number) =>
+  api<{correlation_id: string; status: string}>(`/api/devices/${ieee}/command`, {
+    method: 'POST',
+    body: JSON.stringify({ action: 'color', endpoint, params: { mode: 'xy', x, y } })
+  })
 export const renameDevice = (ieee: string, name: string) => api<any>(`/api/devices/${ieee}/rename`, { method: 'PATCH', body: JSON.stringify({ name }) })
 export const deleteDevice = (ieee: string) => api<any>(`/api/devices/${ieee}`, { method: 'DELETE' })
 export const readAttr = (ieee: string, endpoint: number | undefined, cluster: string, attribute: string) =>
