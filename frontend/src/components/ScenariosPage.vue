@@ -17,33 +17,6 @@
                 <option value="schedule">Schedule</option>
               </select>
             </div>
-            <div class="form-group">
-              <label class="form-label">Action Type</label>
-              <select v-model="form.action_type" class="input-select">
-                <option value="command">Command</option>
-              </select>
-            </div>
-            <div class="form-group full-width">
-              <label class="form-label">Target Device</label>
-              <select v-model="selectedDevice" class="input-select">
-                <option value="">Select device...</option>
-                <option v-for="d in store.state.devices" :key="d.ieee" :value="d.ieee">{{ d.name || 'Unknown' }} ({{ d.ieee }})</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Action</label>
-              <select v-model="form.action" class="input-select">
-                <option value="on">On</option>
-                <option value="off">Off</option>
-                <option value="toggle" selected>Toggle</option>
-                <option value="level">Level</option>
-                <option value="color">Color</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Params (JSON)</label>
-              <input type="text" v-model="paramsRaw" class="input-field" placeholder='{"level":128}' />
-            </div>
 
             <div v-if="form.trigger_type === 'schedule'" class="schedule-fields full-width">
               <label class="form-label">Days of Week</label>
@@ -60,6 +33,31 @@
               <label class="form-label">Trigger Config (JSON)</label>
               <textarea v-model="triggerConfigRaw" class="input-textarea" placeholder='{"event":"device_joined"} or {"cron":"0 7 * * 1,2,5"}'></textarea>
             </div>
+
+            <!-- Actions -->
+            <div class="form-group full-width">
+              <label class="form-label">Actions</label>
+              <div class="actions-list">
+                <div v-for="(act, idx) in actions" :key="idx" class="action-row">
+                  <select v-model="act.ieee" class="input-select action-device">
+                    <option value="">Device...</option>
+                    <option v-for="d in store.state.devices" :key="d.ieee" :value="d.ieee">{{ d.name || 'Unknown' }}</option>
+                  </select>
+                  <select v-model="act.action" class="input-select action-cmd">
+                    <option value="on">On</option>
+                    <option value="off">Off</option>
+                    <option value="toggle">Toggle</option>
+                    <option value="level">Level</option>
+                    <option value="color">Color</option>
+                    <option value="color_ct">CT</option>
+                  </select>
+                  <input type="text" v-model="act.params" class="input-field action-params" placeholder='{"level":128} or {"hex":"#FF0000"}' />
+                  <button type="button" class="btn btn-danger btn-sm" @click="removeAction(idx)" title="Remove">×</button>
+                </div>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" @click="addAction">+ Add Action</button>
+            </div>
+
             <div class="form-group full-width">
               <label class="form-checkbox-row">
                 <input type="checkbox" v-model="form.is_enabled" checked />
@@ -96,7 +94,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, watch, onMounted } from 'vue'
+import { reactive, ref, onMounted } from 'vue'
 import { useHubStore } from '../composables/useHubStore'
 import * as api from '../api'
 import ScenarioCard from './ScenarioCard.vue'
@@ -107,33 +105,47 @@ const daysOfWeek = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
 const form = reactive({
   name: '',
   trigger_type: 'manual',
-  action_type: 'command',
-  action: 'toggle',
   is_enabled: true,
   time: '08:00',
 })
-const selectedDevice = ref('')
-const paramsRaw = ref('')
 const triggerConfigRaw = ref('')
 const selectedDays = ref([...daysOfWeek])
+
+interface ActionForm {
+  ieee: string
+  action: string
+  params: string
+}
+const actions = ref<ActionForm[]>([{ ieee: '', action: 'toggle', params: '' }])
+
+function addAction() {
+  actions.value.push({ ieee: '', action: 'toggle', params: '' })
+}
+function removeAction(idx: number) {
+  if (actions.value.length > 1) actions.value.splice(idx, 1)
+}
 
 function onTriggerChange() {
   triggerConfigRaw.value = ''
 }
 
 async function submit() {
-  if (!selectedDevice.value) {
-    alert('Select a target device')
-    return
-  }
-  let action_data: any = { ieee: selectedDevice.value, action: form.action, params: {} }
-  if (paramsRaw.value.trim()) {
-    try {
-      action_data.params = JSON.parse(paramsRaw.value.trim())
-    } catch {
-      alert('Params must be valid JSON or empty')
+  const payloadActions: any[] = []
+  for (const act of actions.value) {
+    if (!act.ieee) {
+      alert('Select a target device for every action')
       return
     }
+    const actionData: any = { ieee: act.ieee, action: act.action, params: {} }
+    if (act.params.trim()) {
+      try {
+        actionData.params = JSON.parse(act.params.trim())
+      } catch {
+        alert('Params must be valid JSON or empty')
+        return
+      }
+    }
+    payloadActions.push({ action_type: 'command', action_data: actionData })
   }
 
   let trigger_data: any = null
@@ -156,9 +168,8 @@ async function submit() {
   const payload = {
     name: form.name,
     trigger_type: form.trigger_type,
-    trigger_data: trigger_data,
-    action_type: form.action_type,
-    action_data,
+    trigger_data,
+    actions: payloadActions,
     is_enabled: form.is_enabled,
     sort_order: store.state.scenarios.length,
   }
@@ -166,9 +177,8 @@ async function submit() {
   try {
     await api.createScenario(payload)
     form.name = ''
-    paramsRaw.value = ''
     triggerConfigRaw.value = ''
-    selectedDevice.value = ''
+    actions.value = [{ ieee: '', action: 'toggle', params: '' }]
     await store.loadScenarios()
   } catch (e: any) {
     alert('Failed to create scenario')
@@ -249,14 +259,31 @@ onMounted(() => {
 .list-cards-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 3px; }
 .list-empty { text-align: center; color: #666; padding: 30px; font-style: italic; }
 
+/* Multi-action rows */
+.actions-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.action-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.action-device { flex: 2; }
+.action-cmd { flex: 1; min-width: 80px; }
+.action-params { flex: 2; }
+
 .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; transition: all 0.2s; text-transform: uppercase; letter-spacing: 0.5px; }
 .btn-success { background: #00ff88; color: #111; }
 .btn-success:hover { background: #00cc6a; }
+.btn-secondary { background: rgba(255,255,255,0.1); color: #fff; border: 1px solid rgba(255,255,255,0.2); }
+.btn-secondary:hover { background: rgba(255,255,255,0.2); }
+.btn-danger { background: transparent; border: 1px solid rgba(255,68,68,0.4); color: #ff4444; }
+.btn-danger:hover { background: rgba(255,68,68,0.1); }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
 
 @media (max-width: 1200px) {
   .dashboard { grid-template-columns: 1fr; }
 }
 @media (max-width: 768px) {
   .form-grid { grid-template-columns: 1fr; }
+  .action-row { flex-wrap: wrap; }
 }
 </style>

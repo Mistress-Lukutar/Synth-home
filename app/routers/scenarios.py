@@ -24,8 +24,7 @@ class ScenarioCreate(BaseModel):
     name: str = Field(..., min_length=1)
     trigger_type: str = Field(default="manual")
     trigger_data: dict | None = None
-    action_type: str = Field(default="command")
-    action_data: dict | None = None
+    actions: List[dict] = Field(default_factory=list)
     is_enabled: bool = True
     sort_order: int = 0
 
@@ -34,8 +33,7 @@ class ScenarioUpdate(BaseModel):
     name: str | None = None
     trigger_type: str | None = None
     trigger_data: dict | None = None
-    action_type: str | None = None
-    action_data: dict | None = None
+    actions: List[dict] | None = None
     is_enabled: bool | None = None
     sort_order: int | None = None
 
@@ -47,8 +45,7 @@ class ScenarioOut(BaseModel):
     sort_order: int
     trigger_type: str
     trigger_data: dict | None
-    action_type: str
-    action_data: dict | None
+    actions: List[dict]
 
     model_config = {"from_attributes": True}
 
@@ -68,8 +65,7 @@ async def create_scenario(
         name=req.name,
         trigger_type=req.trigger_type,
         trigger_data=req.trigger_data,
-        action_type=req.action_type,
-        action_data=req.action_data,
+        actions=req.actions,
         is_enabled=req.is_enabled,
         sort_order=req.sort_order,
     )

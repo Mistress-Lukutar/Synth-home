@@ -14,8 +14,12 @@
           @blur="save"
         />
         <button class="btn-icon btn-danger" @click="remove" title="Delete device">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="#ff4444">
-            <path d="M3 6h18v2H3zm2 3h14v13H5zm3-5h8v2H8z"/>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#ff4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 6h18"/>
+            <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/>
+            <path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+            <path d="M10 11v6"/>
+            <path d="M14 11v6"/>
           </svg>
         </button>
       </div>
@@ -42,8 +46,9 @@
             <div class="knob"></div>
           </div>
 
-          <!-- Level slider (cluster 0x0008 = 8) -->
+          <!-- Brightness slider (cluster 0x0008 = 8) -->
           <div v-if="hasCluster(ep, 8)" class="level-control">
+            <label class="level-label">Brightness</label>
             <input
               type="range"
               :min="getState(ep.id, 'level_min') ?? 0"
@@ -54,7 +59,7 @@
             />
           </div>
 
-          <!-- Color mode selector (cluster 0x0300 = 768) -->
+          <!-- Color controls (cluster 0x0300 = 768) -->
           <template v-if="hasCluster(ep, 768)">
             <div class="color-mode-row">
               <label class="color-mode-label">Color</label>
@@ -63,46 +68,34 @@
                 v-model="uiColorModes[ep.id]"
                 @change="onColorModeChange(ep.id, uiColorModes[ep.id])"
               >
-                <option v-if="colorSupports(ep.id, 'hs')" value="hs">HS</option>
-                <option v-if="colorSupports(ep.id, 'xy')" value="xy">XY</option>
+                <option v-if="colorSupports(ep.id, 'hs') || colorSupports(ep.id, 'xy')" value="rgb">RGB</option>
                 <option v-if="colorSupports(ep.id, 'ct')" value="ct">CT</option>
               </select>
             </div>
 
-            <!-- HS sliders -->
-            <template v-if="uiColorModes[ep.id] === 'hs'">
-              <div class="slider-row">
-                <label>Hue</label>
-                <input type="range" min="0" max="360" :value="getState(ep.id, 'hue') ?? 0" @change="(e) => setColorHs(ep.id, Number((e.target as HTMLInputElement).value), getState(ep.id, 'sat') ?? 100)" />
-                <span>{{ getState(ep.id, 'hue') ?? 0 }}</span>
-              </div>
-              <div class="slider-row">
-                <label>Sat</label>
-                <input type="range" min="0" max="100" :value="getState(ep.id, 'sat') ?? 100" @change="(e) => setColorHs(ep.id, getState(ep.id, 'hue') ?? 0, Number((e.target as HTMLInputElement).value))" />
-                <span>{{ getState(ep.id, 'sat') ?? 100 }}%</span>
+            <!-- RGB: Color wheel (hub converts hex → HS or XY) -->
+            <template v-if="uiColorModes[ep.id] === 'rgb'">
+              <div class="color-picker-row">
+                <input
+                  type="color"
+                  class="color-picker-native"
+                  :value="lastHex[ep.id] || '#ffffff'"
+                  @change="(e) => setColorRgb(ep.id, (e.target as HTMLInputElement).value)"
+                />
               </div>
             </template>
 
-            <!-- XY sliders -->
-            <template v-if="uiColorModes[ep.id] === 'xy'">
-              <div class="slider-row">
-                <label>X</label>
-                <input type="range" min="0" max="1" step="0.01" :value="getState(ep.id, 'x') ?? 0.5" @change="(e) => setColorXy(ep.id, Number((e.target as HTMLInputElement).value), getState(ep.id, 'y') ?? 0.5)" />
-                <span>{{ (getState(ep.id, 'x') ?? 0.5).toFixed(2) }}</span>
-              </div>
-              <div class="slider-row">
-                <label>Y</label>
-                <input type="range" min="0" max="1" step="0.01" :value="getState(ep.id, 'y') ?? 0.5" @change="(e) => setColorXy(ep.id, getState(ep.id, 'x') ?? 0.5, Number((e.target as HTMLInputElement).value))" />
-                <span>{{ (getState(ep.id, 'y') ?? 0.5).toFixed(2) }}</span>
-              </div>
-            </template>
-
-            <!-- CT slider -->
+            <!-- CT: Gradient slider -->
             <template v-if="uiColorModes[ep.id] === 'ct'">
-              <div class="slider-row">
-                <label>CT</label>
-                <input type="range" min="153" max="500" :value="getState(ep.id, 'ct') ?? 300" @change="(e) => setCt(ep.id, Number((e.target as HTMLInputElement).value))" />
-                <span>{{ getState(ep.id, 'ct') ?? 300 }} mireds</span>
+              <div class="ct-slider-row">
+                <input
+                  type="range"
+                  :min="getState(ep.id, 'ct_min') ?? 153"
+                  :max="getState(ep.id, 'ct_max') ?? 500"
+                  class="ct-slider"
+                  :value="getState(ep.id, 'ct') ?? 300"
+                  @change="(e) => setCt(ep.id, Number((e.target as HTMLInputElement).value))"
+                />
               </div>
             </template>
           </template>
@@ -127,11 +120,69 @@ const editing = ref(false)
 const editName = ref('')
 const inputRef = ref<HTMLInputElement | null>(null)
 const uiColorModes = reactive<Record<number, string>>({})
+const lastHex = reactive<Record<number, string>>({})
+
+function zclHsToHex(hue: number, sat: number, level: number = 254): string {
+  // ZCL hue 0-254, sat 0-254, level 0-254 → RGB hex
+  const h = (hue / 254) * 360
+  const s = sat / 254
+  const v = level / 254
+  const c = v * s
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1))
+  const m = v - c
+  let r = 0, g = 0, b = 0
+  if (h < 60)       { r = c; g = x; b = 0 }
+  else if (h < 120) { r = x; g = c; b = 0 }
+  else if (h < 180) { r = 0; g = c; b = x }
+  else if (h < 240) { r = 0; g = x; b = c }
+  else if (h < 300) { r = x; g = 0; b = c }
+  else              { r = c; g = 0; b = x }
+  r = Math.round((r + m) * 255)
+  g = Math.round((g + m) * 255)
+  b = Math.round((b + m) * 255)
+  const toHex = (n: number) => n.toString(16).padStart(2, '0')
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`
+}
+
+function zclXyToHex(x: number, y: number, level: number = 254): string {
+  // ZCL x/y raw 0-65535, level 0-254 → RGB hex
+  const xn = Math.max(0.0001, x / 65535)
+  const yn = Math.max(0.0001, y / 65535)
+  const Y = level / 254
+  const X = (Y / yn) * xn
+  const Z = (Y / yn) * (1 - xn - yn)
+  let r = X * 3.2406 + Y * -1.5372 + Z * -0.4986
+  let g = X * -0.9689 + Y * 1.8758 + Z * 0.0415
+  let b = X * 0.0557 + Y * -0.2040 + Z * 1.0570
+  r = r > 0.0031308 ? 1.055 * Math.pow(r, 1 / 2.4) - 0.055 : 12.92 * r
+  g = g > 0.0031308 ? 1.055 * Math.pow(g, 1 / 2.4) - 0.055 : 12.92 * g
+  b = b > 0.0031308 ? 1.055 * Math.pow(b, 1 / 2.4) - 0.055 : 12.92 * b
+  r = Math.max(0, Math.min(1, r))
+  g = Math.max(0, Math.min(1, g))
+  b = Math.max(0, Math.min(1, b))
+  const toHex = (n: number) => Math.round(n * 255).toString(16).padStart(2, '0')
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`
+}
 
 function syncColorModesFromState() {
   for (const ep of props.device.endpoints || []) {
     const mode = getState(ep.id, 'color_mode')
-    if (mode) uiColorModes[ep.id] = mode
+    if (mode === 'hs' || mode === 'xy') {
+      uiColorModes[ep.id] = 'rgb'
+      // Reconstruct hex from cached state for color picker (using CurrentLevel as brightness)
+      const level = getState(ep.id, 'level') ?? 254
+      const hue = getState(ep.id, 'hue')
+      const sat = getState(ep.id, 'sat')
+      const xv = getState(ep.id, 'x')
+      const yv = getState(ep.id, 'y')
+      if (hue !== undefined && sat !== undefined) {
+        lastHex[ep.id] = zclHsToHex(hue, sat, level)
+      } else if (xv !== undefined && yv !== undefined) {
+        lastHex[ep.id] = zclXyToHex(xv, yv, level)
+      }
+    } else if (mode === 'ct') {
+      uiColorModes[ep.id] = 'ct'
+    }
   }
 }
 
@@ -184,21 +235,18 @@ function getState(epId: number, key: string): any {
 
 function colorSupports(epId: number, cap: 'hs' | 'xy' | 'ct' | 'color_loop'): boolean {
   const caps = getState(epId, 'color_caps')
-  if (!caps) return true // show all options until caps are known
+  if (!caps) return true
   return !!caps[cap]
 }
 
 function onColorModeChange(epId: number, mode: string) {
-  // Just a UI switch — the actual mode on the device is determined by the last command sent
-  // Read relevant attributes to populate sliders for the selected mode
-  if (mode === 'hs') {
-    api.readAttr(props.device.ieee, epId, '0x0300', '0x0000').catch(() => {}) // hue
-    api.readAttr(props.device.ieee, epId, '0x0300', '0x0001').catch(() => {}) // sat
-  } else if (mode === 'xy') {
-    api.readAttr(props.device.ieee, epId, '0x0300', '0x0003').catch(() => {}) // x
-    api.readAttr(props.device.ieee, epId, '0x0300', '0x0004').catch(() => {}) // y
+  if (mode === 'rgb') {
+    api.readAttr(props.device.ieee, epId, '0x0300', '0x0000').catch(() => {})
+    api.readAttr(props.device.ieee, epId, '0x0300', '0x0001').catch(() => {})
+    api.readAttr(props.device.ieee, epId, '0x0300', '0x0003').catch(() => {})
+    api.readAttr(props.device.ieee, epId, '0x0300', '0x0004').catch(() => {})
   } else if (mode === 'ct') {
-    api.readAttr(props.device.ieee, epId, '0x0300', '0x0007').catch(() => {}) // ct
+    api.readAttr(props.device.ieee, epId, '0x0300', '0x0007').catch(() => {})
   }
 }
 
@@ -235,29 +283,20 @@ async function setLevel(epId: number, level: number) {
   await sendAndTrack('level', epId, { level })
 }
 
-async function setColorHs(epId: number, hue: number, sat: number) {
+async function setColorRgb(epId: number, hex: string) {
+  lastHex[epId] = hex
+  const caps = getState(epId, 'color_caps') || { hs: true, xy: true }
+  // Prefer XY if supported (more compatible), fallback to HS
+  const mode = caps.xy ? 'xy' : 'hs'
   try {
-    const result = await api.sendColorHs(props.device.ieee, hue, sat, epId)
+    const result = await api.sendColor(props.device.ieee, hex, mode, epId)
     store.state.pendingCommands.set(result.correlation_id, {
       ieee: props.device.ieee,
       endpoint: epId,
       action: 'color',
     })
   } catch (e: any) {
-    store.logEvent('color hs error: ' + e.message)
-  }
-}
-
-async function setColorXy(epId: number, x: number, y: number) {
-  try {
-    const result = await api.sendColorXy(props.device.ieee, x, y, epId)
-    store.state.pendingCommands.set(result.correlation_id, {
-      ieee: props.device.ieee,
-      endpoint: epId,
-      action: 'color',
-    })
-  } catch (e: any) {
-    store.logEvent('color xy error: ' + e.message)
+    store.logEvent('color error: ' + e.message)
   }
 }
 
@@ -358,7 +397,18 @@ async function setCt(epId: number, ct: number) {
 .toggle-switch.pending { background: #ffaa00; }
 .toggle-switch.pending .knob { left: 16px; }
 
-/* Level slider */
+/* Brightness slider */
+.level-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.level-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: #888;
+  letter-spacing: 0.5px;
+}
 .level-control input[type="range"] {
   width: 100%;
   accent-color: #00ff88;
@@ -389,27 +439,57 @@ async function setCt(epId: number, ct: number) {
   color: #fff;
 }
 
-/* Slider rows */
-.slider-row {
+/* Color picker */
+.color-picker-row {
   display: flex;
   align-items: center;
-  gap: 8px;
 }
-.slider-row label {
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  color: #888;
-  width: 30px;
-  flex-shrink: 0;
+.color-picker-native {
+  width: 100%;
+  height: 40px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  background: none;
 }
-.slider-row input[type="range"] {
+
+/* CT slider */
+.ct-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ct-slider {
+  -webkit-appearance: none;
+  appearance: none;
   flex: 1;
-  accent-color: #00ff88;
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(to right, #a8d0ff, #ffffff, #ff8a00);
+  outline: none;
 }
-.slider-row span {
+.ct-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #666;
+  cursor: pointer;
+}
+.ct-slider::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #666;
+  cursor: pointer;
+}
+.ct-value {
   font-size: 0.8rem;
   color: #aaa;
-  width: 60px;
+  width: 70px;
   text-align: right;
   font-family: 'SF Mono', Monaco, monospace;
 }
@@ -427,7 +507,8 @@ async function setCt(epId: number, ct: number) {
   margin-left: 4px;
 }
 .btn-icon:hover { background: rgba(255,255,255,0.15); }
-.btn-icon.btn-danger:hover { background: rgba(255,68,68,0.15); border-color: rgba(255,68,68,0.3); }
+.btn-icon.btn-danger { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,68,68,0.3); }
+.btn-icon.btn-danger:hover { background: rgba(255,68,68,0.1); border-color: rgba(255,68,68,0.5); }
 
 @media (max-width: 768px) {
   .device-card { padding: 10px 12px; }

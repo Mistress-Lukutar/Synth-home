@@ -34,6 +34,9 @@
         <div class="list-details">
           <span>{{ details }}</span>
         </div>
+        <div class="actions-summary">
+          <span v-for="(act, i) in actionSummaries" :key="i" class="action-badge">{{ act }}</span>
+        </div>
       </div>
       <div class="list-actions">
         <button class="btn-icon" @click="run" title="Run">
@@ -47,8 +50,12 @@
           </svg>
         </button>
         <button class="btn-icon btn-danger" @click="remove" title="Delete">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="#ff4444">
-            <path d="M3 6h18v2H3zm2 3h14v13H5zm3-5h8v2H8z"/>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#ff4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 6h18"/>
+            <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/>
+            <path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+            <path d="M10 11v6"/>
+            <path d="M14 11v6"/>
           </svg>
         </button>
       </div>
@@ -63,27 +70,6 @@
             <option value="device_event">Device Event</option>
             <option value="schedule">Schedule</option>
           </select>
-        </div>
-        <div class="edit-row">
-          <label class="edit-label">Target Device</label>
-          <select v-model="editForm.target_device" class="edit-input">
-            <option value="">Select device...</option>
-            <option v-for="d in store.state.devices" :key="d.ieee" :value="d.ieee">{{ d.name || 'Unknown' }} ({{ d.ieee }})</option>
-          </select>
-        </div>
-        <div class="edit-row">
-          <label class="edit-label">Action</label>
-          <select v-model="editForm.action" class="edit-input">
-            <option value="on">On</option>
-            <option value="off">Off</option>
-            <option value="toggle">Toggle</option>
-            <option value="level">Level</option>
-            <option value="color">Color</option>
-          </select>
-        </div>
-        <div class="edit-row">
-          <label class="edit-label">Params (JSON)</label>
-          <input type="text" v-model="editForm.params" class="edit-input" placeholder='{"level":128}' />
         </div>
 
         <template v-if="editForm.trigger_type === 'schedule'">
@@ -107,9 +93,34 @@
             <input type="text" v-model="editForm.trigger_config" class="edit-input" placeholder='{"event":"device_joined"}' />
           </div>
         </template>
+
+        <!-- Actions editor -->
+        <div class="edit-row full-width">
+          <label class="edit-label">Actions</label>
+          <div class="actions-editor">
+            <div v-for="(act, idx) in editForm.actions" :key="idx" class="action-edit-row">
+              <select v-model="act.ieee" class="edit-input action-device">
+                <option value="">Device...</option>
+                <option v-for="d in store.state.devices" :key="d.ieee" :value="d.ieee">{{ d.name || 'Unknown' }}</option>
+              </select>
+              <select v-model="act.action" class="edit-input action-cmd">
+                <option value="on">On</option>
+                <option value="off">Off</option>
+                <option value="toggle">Toggle</option>
+                <option value="level">Level</option>
+                <option value="color">Color</option>
+                <option value="color_ct">CT</option>
+              </select>
+              <input type="text" v-model="act.params" class="edit-input action-params" placeholder='{"level":128}' />
+              <button type="button" class="btn btn-danger btn-sm" @click="removeEditAction(idx)">×</button>
+            </div>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" @click="addEditAction">+ Add Action</button>
+        </div>
       </div>
       <div class="edit-actions">
         <button class="btn btn-success" @click="saveEdit">Save</button>
+        <button class="btn btn-secondary" @click="copyScenario">Copy</button>
         <button class="btn btn-toggle" @click="cancelEdit">Cancel</button>
       </div>
     </div>
@@ -133,16 +144,35 @@ const nameInputRef = ref<HTMLInputElement | null>(null)
 
 // Full scenario edit
 const showEdit = ref(false)
+
+interface EditAction {
+  ieee: string
+  action: string
+  params: string
+}
+
 const editForm = reactive({
   name: '',
   trigger_type: 'manual',
-  target_device: '',
-  action: 'toggle',
-  params: '',
-  time: '08:00',
   days: [...daysOfWeek],
+  time: '08:00',
   trigger_config: '',
   is_enabled: true,
+  actions: [] as EditAction[],
+})
+
+const actionSummaries = computed(() => {
+  const acts = props.scenario.actions || []
+  return acts.map((act: any) => {
+    const data = act.action_data || {}
+    const device = store.state.devices.find((d: any) => d.ieee === data.ieee)
+    const name = device?.name || data.ieee || '?'
+    let extra = ''
+    if (data.action === 'color' && data.params?.hex) extra = ` ${data.params.hex}`
+    else if (data.action === 'color_ct' && data.params?.ct) extra = ` ${data.params.ct}K`
+    else if (data.action === 'level' && data.params?.level != null) extra = ` ${data.params.level}`
+    return `${name}: ${data.action}${extra}`
+  })
 })
 
 const details = computed(() => {
@@ -152,7 +182,7 @@ const details = computed(() => {
     const m = String(props.scenario.trigger_data.minute || 0).padStart(2, '0')
     s += ` · ${props.scenario.trigger_data.days} ${h}:${m}`
   }
-  s += ` · Action: ${props.scenario.action_type}`
+  s += ` · ${(props.scenario.actions || []).length} action(s)`
   return s
 })
 
@@ -178,6 +208,13 @@ async function saveName() {
   }
 }
 
+function addEditAction() {
+  editForm.actions.push({ ieee: '', action: 'toggle', params: '' })
+}
+function removeEditAction(idx: number) {
+  if (editForm.actions.length > 1) editForm.actions.splice(idx, 1)
+}
+
 function toggleEdit() {
   if (showEdit.value) {
     showEdit.value = false
@@ -188,10 +225,18 @@ function toggleEdit() {
   editForm.trigger_type = props.scenario.trigger_type
   editForm.is_enabled = props.scenario.is_enabled
 
-  const ad = props.scenario.action_data || {}
-  editForm.target_device = ad.ieee || ''
-  editForm.action = ad.action || 'toggle'
-  editForm.params = ad.params ? JSON.stringify(ad.params) : ''
+  const acts = props.scenario.actions || []
+  editForm.actions = acts.map((act: any) => {
+    const data = act.action_data || {}
+    return {
+      ieee: data.ieee || '',
+      action: data.action || 'toggle',
+      params: data.params ? JSON.stringify(data.params) : '',
+    }
+  })
+  if (editForm.actions.length === 0) {
+    editForm.actions.push({ ieee: '', action: 'toggle', params: '' })
+  }
 
   if (props.scenario.trigger_type === 'schedule') {
     const td = props.scenario.trigger_data || {}
@@ -221,15 +266,77 @@ function cancelEdit() {
   showEdit.value = false
 }
 
-async function saveEdit() {
-  let action_data: any = { ieee: editForm.target_device, action: editForm.action, params: {} }
-  if (editForm.params.trim()) {
-    try {
-      action_data.params = JSON.parse(editForm.params.trim())
-    } catch {
-      store.logEvent('Params must be valid JSON')
+async function copyScenario() {
+  const payloadActions: any[] = []
+  for (const act of editForm.actions) {
+    if (!act.ieee) {
+      store.logEvent('Select a target device for every action')
       return
     }
+    const actionData: any = { ieee: act.ieee, action: act.action, params: {} }
+    if (act.params.trim()) {
+      try {
+        actionData.params = JSON.parse(act.params.trim())
+      } catch {
+        store.logEvent('Params must be valid JSON')
+        return
+      }
+    }
+    payloadActions.push({ action_type: 'command', action_data: actionData })
+  }
+
+  let trigger_data: any = null
+  if (editForm.trigger_type === 'schedule') {
+    const [h, m] = (editForm.time || '00:00').split(':')
+    trigger_data = {
+      days: editForm.days.join(','),
+      hour: parseInt(h, 10),
+      minute: parseInt(m, 10),
+    }
+  } else if (editForm.trigger_type === 'device_event' && editForm.trigger_config.trim()) {
+    try {
+      trigger_data = JSON.parse(editForm.trigger_config.trim())
+    } catch {
+      store.logEvent('Trigger Config must be valid JSON')
+      return
+    }
+  }
+
+  const payload = {
+    name: editForm.name + ' (copy)',
+    trigger_type: editForm.trigger_type,
+    trigger_data,
+    actions: payloadActions,
+    is_enabled: editForm.is_enabled,
+    sort_order: store.state.scenarios.length,
+  }
+
+  try {
+    await api.createScenario(payload)
+    showEdit.value = false
+    emit('update')
+  } catch (e: any) {
+    store.logEvent('Copy failed: ' + e.message)
+  }
+}
+
+async function saveEdit() {
+  const payloadActions: any[] = []
+  for (const act of editForm.actions) {
+    if (!act.ieee) {
+      store.logEvent('Select a target device for every action')
+      return
+    }
+    const actionData: any = { ieee: act.ieee, action: act.action, params: {} }
+    if (act.params.trim()) {
+      try {
+        actionData.params = JSON.parse(act.params.trim())
+      } catch {
+        store.logEvent('Params must be valid JSON')
+        return
+      }
+    }
+    payloadActions.push({ action_type: 'command', action_data: actionData })
   }
 
   let trigger_data: any = null
@@ -253,8 +360,7 @@ async function saveEdit() {
     name: editForm.name,
     trigger_type: editForm.trigger_type,
     trigger_data,
-    action_type: 'command',
-    action_data,
+    actions: payloadActions,
     is_enabled: editForm.is_enabled,
   }
 
@@ -361,6 +467,15 @@ async function remove() {
   min-width: 120px;
 }
 .list-details { font-size: 0.8rem; color: #888; display: flex; gap: 12px; flex-wrap: wrap; }
+.actions-summary { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.action-badge {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  color: #ccc;
+}
 
 .list-actions { display: flex; gap: 8px; flex-shrink: 0; }
 
@@ -378,7 +493,8 @@ async function remove() {
 .btn-icon:hover { background: rgba(255,255,255,0.15); border-color: rgba(255,255,255,0.25); }
 .btn-icon.active { background: rgba(0,255,136,0.15); border-color: rgba(0,255,136,0.4); }
 .btn-icon.active svg { fill: #00ff88; }
-.btn-icon.btn-danger:hover { background: rgba(255,68,68,0.15); border-color: rgba(255,68,68,0.3); }
+.btn-icon.btn-danger { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,68,68,0.3); }
+.btn-icon.btn-danger:hover { background: rgba(255,68,68,0.1); border-color: rgba(255,68,68,0.5); }
 
 .edit-panel {
   border-top: 1px solid rgba(255,255,255,0.1);
@@ -397,9 +513,7 @@ async function remove() {
   flex-direction: column;
   gap: 4px;
 }
-.edit-row:nth-child(1),
-.edit-row:nth-child(5),
-.edit-row:nth-child(6) {
+.edit-row.full-width {
   grid-column: 1 / -1;
 }
 .edit-label {
@@ -423,16 +537,33 @@ async function remove() {
 
 .edit-actions { display: flex; gap: 10px; }
 
+/* Multi-action editor inside card */
+.actions-editor { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.action-edit-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.action-device { flex: 2; }
+.action-cmd { flex: 1; min-width: 80px; }
+.action-params { flex: 2; }
+
 .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; transition: all 0.2s; text-transform: uppercase; letter-spacing: 0.5px; }
 .btn-success { background: #00ff88; color: #111; }
 .btn-success:hover { background: #00cc6a; }
 .btn-toggle { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2); color: #fff; }
 .btn-toggle:hover { background: rgba(255,255,255,0.15); }
+.btn-secondary { background: rgba(255,255,255,0.1); color: #fff; border: 1px solid rgba(255,255,255,0.2); }
+.btn-secondary:hover { background: rgba(255,255,255,0.2); }
+.btn-danger { background: transparent; border: 1px solid rgba(255,68,68,0.4); color: #ff4444; }
+.btn-danger:hover { background: rgba(255,68,68,0.1); }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
 
 @media (max-width: 768px) {
   .card-main { flex-direction: column; align-items: flex-start; gap: 10px; }
   .list-actions { align-self: flex-end; }
   .edit-form { grid-template-columns: 1fr; }
-  .edit-row:nth-child(n) { grid-column: auto; }
+  .edit-row.full-width { grid-column: auto; }
+  .action-edit-row { flex-wrap: wrap; }
 }
 </style>

@@ -14,6 +14,7 @@ export const connectPort = (port: string) => api<{ success: boolean; error?: str
 export const disconnectPort = () => api<{ success: boolean }>('/api/disconnect', { method: 'POST' })
 export const getStatus = () => api<{ connected: boolean; port: string | null }>('/api/status')
 export const listDevices = () => api<{ success: boolean; devices: any[] }>('/api/devices')
+export const refreshDevices = () => api<{ success: boolean; devices: any[] }>('/api/devices/refresh', { method: 'POST' })
 export const sendCommand = (ieee: string, action: string, endpoint?: number, params?: object) =>
   api<{correlation_id: string; status: string}>(`/api/devices/${ieee}/command`, {
     method: 'POST',
@@ -26,16 +27,10 @@ export const sendColorCt = (ieee: string, ct: number, endpoint?: number) =>
     body: JSON.stringify({ action: 'color_ct', endpoint, params: { ct } })
   })
 
-export const sendColorHs = (ieee: string, hue: number, sat: number, endpoint?: number) =>
+export const sendColor = (ieee: string, hex: string, mode: 'hs' | 'xy', endpoint?: number) =>
   api<{correlation_id: string; status: string}>(`/api/devices/${ieee}/command`, {
     method: 'POST',
-    body: JSON.stringify({ action: 'color', endpoint, params: { mode: 'hs', hue, sat } })
-  })
-
-export const sendColorXy = (ieee: string, x: number, y: number, endpoint?: number) =>
-  api<{correlation_id: string; status: string}>(`/api/devices/${ieee}/command`, {
-    method: 'POST',
-    body: JSON.stringify({ action: 'color', endpoint, params: { mode: 'xy', x, y } })
+    body: JSON.stringify({ action: 'color', endpoint, params: { hex, mode } })
   })
 export const renameDevice = (ieee: string, name: string) => api<any>(`/api/devices/${ieee}/rename`, { method: 'PATCH', body: JSON.stringify({ name }) })
 export const deleteDevice = (ieee: string) => api<any>(`/api/devices/${ieee}`, { method: 'DELETE' })
