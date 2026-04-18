@@ -263,41 +263,6 @@ async function refreshPorts(): Promise<string[]> {
   }
 }
 
-let _pollTimer: ReturnType<typeof setInterval> | null = null
-
-function startPolling() {
-  if (_pollTimer) return
-  _pollTimer = setInterval(() => {
-    if (!state.isConnected) return
-    for (const device of state.devices) {
-      if (device.online === false) continue
-      // Poll OnOff (0x0006/0x0000) and Level (0x0008/0x0000) for each endpoint
-      const endpoints = device.endpoints || []
-      for (const ep of endpoints) {
-        const epId = ep.id
-        const clusters = ep.clusters || []
-        if (clusters.includes(6)) {
-          api.readAttr(device.ieee, epId, '0x0006', '0x0000').catch(() => {})
-        }
-        if (clusters.includes(8)) {
-          api.readAttr(device.ieee, epId, '0x0008', '0x0000').catch(() => {})
-        }
-      }
-      // If no endpoints reported, try EP 1 blindly for backward compat
-      if (endpoints.length === 0) {
-        api.readAttr(device.ieee, 1, '0x0006', '0x0000').catch(() => {})
-      }
-    }
-  }, 5000)
-}
-
-function stopPolling() {
-  if (_pollTimer) {
-    clearInterval(_pollTimer)
-    _pollTimer = null
-  }
-}
-
 async function connect(port: string): Promise<boolean> {
   try {
     const data = await api.connectPort(port)
@@ -306,7 +271,6 @@ async function connect(port: string): Promise<boolean> {
       state.currentPort = port
       logEvent(`Connected: ${port}`)
       startSSE()
-      startPolling()
       await refreshDevices()
       return true
     } else {
@@ -326,7 +290,6 @@ async function disconnect() {
   state.isConnected = false
   state.currentPort = null
   state.devices = []
-  stopPolling()
   stopSSE()
   logEvent('Disconnected')
 }
@@ -353,7 +316,6 @@ async function restoreConnection() {
       state.isConnected = true
       state.currentPort = data.port
       startSSE()
-      startPolling()
       await refreshDevices()
     }
   } catch {
@@ -383,6 +345,28 @@ async function reorderScenarios(fromIndex: number, toIndex: number) {
   }
 }
 
+async function pollDevices() {
+  if (!state.isConnected) return
+  logEvent('Polling device attributes...')
+  for (const device of state.devices) {
+    if (device.online === false) continue
+    const endpoints = device.endpoints || []
+    for (const ep of endpoints) {
+      const epId = ep.id
+      const clusters = ep.clusters || []
+      if (clusters.includes(6)) {
+        await api.readAttr(device.ieee, epId, '0x0006', '0x0000').catch(() => {})
+      }
+      if (clusters.includes(8)) {
+        await api.readAttr(device.ieee, epId, '0x0008', '0x0000').catch(() => {})
+      }
+    }
+    if (endpoints.length === 0) {
+      await api.readAttr(device.ieee, 1, '0x0006', '0x0000').catch(() => {})
+    }
+  }
+}
+
 export function useHubStore() {
   return {
     state: readonly(state),
@@ -394,5 +378,6 @@ export function useHubStore() {
     restoreConnection,
     loadScenarios,
     reorderScenarios,
+    pollDevices,
   }
 }
