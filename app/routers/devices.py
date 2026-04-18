@@ -1,12 +1,12 @@
 """Devices router: list devices and send commands."""
 
-from typing import Annotated
+from typing import Annotated, List
 
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import require_connection, get_db
-from app.models.schemas import CommandRequest, CommandResponse, DevicesResponse, ReadAttrRequest, RenameRequest, RenameResponse, StatusResponse
+from app.models.schemas import CommandRequest, CommandResponse, DevicesResponse, ReadAttrBatchItem, ReadAttrRequest, RenameRequest, RenameResponse, StatusResponse
 from app.repositories.device import DeviceRepository
 from app.repositories.device_alias import DeviceAliasRepository
 from app.services.hub_service import HubService
@@ -70,6 +70,19 @@ async def read_device_attr(
     """Read a Zigbee cluster attribute from a device."""
     result = await service.read_attr(ieee, req.endpoint, req.cluster, req.attribute)
     return CommandResponse(correlation_id=result["correlation_id"], status=result["status"])
+
+
+@router.post("/api/devices/read-attr-batch", response_model=List[CommandResponse])
+async def read_attr_batch(
+    items: List[ReadAttrBatchItem],
+    service: Annotated[HubService, Depends(require_connection)],
+) -> List[CommandResponse]:
+    """Batch read attributes from multiple devices/endpoints in one request."""
+    results: List[CommandResponse] = []
+    for item in items:
+        result = await service.read_attr(item.ieee, item.endpoint, item.cluster, item.attribute)
+        results.append(CommandResponse(correlation_id=result["correlation_id"], status=result["status"]))
+    return results
 
 
 @router.delete("/api/devices/{ieee}", response_model=StatusResponse)

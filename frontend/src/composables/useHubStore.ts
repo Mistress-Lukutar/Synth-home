@@ -377,6 +377,7 @@ async function reorderScenarios(fromIndex: number, toIndex: number) {
 async function pollDevices() {
   if (!state.isConnected) return
   logEvent('Polling device attributes...')
+  const items: { ieee: string; endpoint?: number; cluster: string; attribute: string }[] = []
   for (const device of state.devices) {
     if (device.online === false) continue
     const endpoints = device.endpoints || []
@@ -384,25 +385,32 @@ async function pollDevices() {
       const epId = ep.id
       const clusters = ep.clusters || []
       if (clusters.includes(6)) {
-        await api.readAttr(device.ieee, epId, '0x0006', '0x0000').catch(() => {})
+        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0006', attribute: '0x0000' })
       }
       if (clusters.includes(8)) {
-        await api.readAttr(device.ieee, epId, '0x0008', '0x0000').catch(() => {}) // CurrentLevel
-        await api.readAttr(device.ieee, epId, '0x0008', '0x0002').catch(() => {}) // MinLevel
-        await api.readAttr(device.ieee, epId, '0x0008', '0x0003').catch(() => {}) // MaxLevel
+        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0008', attribute: '0x0000' })
+        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0008', attribute: '0x0002' })
+        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0008', attribute: '0x0003' })
       }
       if (clusters.includes(768)) {
-        await api.readAttr(device.ieee, epId, '0x0300', '0x4002').catch(() => {}) // ColorCapabilities
-        await api.readAttr(device.ieee, epId, '0x0300', '0x0008').catch(() => {}) // ColorMode
-        await api.readAttr(device.ieee, epId, '0x0300', '0x0000').catch(() => {}) // CurrentHue
-        await api.readAttr(device.ieee, epId, '0x0300', '0x0001').catch(() => {}) // CurrentSaturation
-        await api.readAttr(device.ieee, epId, '0x0300', '0x0003').catch(() => {}) // CurrentX
-        await api.readAttr(device.ieee, epId, '0x0300', '0x0004').catch(() => {}) // CurrentY
-        await api.readAttr(device.ieee, epId, '0x0300', '0x0007').catch(() => {}) // ColorTemperatureMireds
+        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x4002' })
+        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0008' })
+        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0000' })
+        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0001' })
+        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0003' })
+        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0004' })
+        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0007' })
       }
     }
     if (endpoints.length === 0) {
-      await api.readAttr(device.ieee, 1, '0x0006', '0x0000').catch(() => {})
+      items.push({ ieee: device.ieee, endpoint: 1, cluster: '0x0006', attribute: '0x0000' })
+    }
+  }
+  if (items.length > 0) {
+    try {
+      await api.readAttrBatch(items)
+    } catch (e: any) {
+      logEvent('Batch read_attr failed: ' + e.message)
     }
   }
 }
