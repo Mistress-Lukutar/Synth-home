@@ -27,7 +27,7 @@ class HubService:
         client: Optional[HubClient] = None,
     ) -> None:
         self._event_bus = event_bus
-        self._client = client or HubClient(ProtocolHandler())
+        self._client = client or HubClient(ProtocolHandler(), event_bus=event_bus)
         self._client.set_on_message(self._on_hub_message)
         self._devices: List[Dict[str, Any]] = []
         self._bg_tasks: set[asyncio.Task] = set()

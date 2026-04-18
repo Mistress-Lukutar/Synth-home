@@ -75,6 +75,11 @@ function handleSSEMessage(msg: any) {
     logEvent('Hub connected event')
   } else if (msg.type === 'disconnected') {
     logEvent('Hub disconnected event')
+  } else if (msg.type === 'hub_serial') {
+    const direction = msg.direction === 'tx' ? '→ TX' : '← RX'
+    const payload = msg.payload || {}
+    const pretty = JSON.stringify(payload, null, 2).substring(0, 600)
+    logEvent(`${direction}\n${pretty}`)
   } else if (msg.type === 'hub_message') {
     const data = msg.data || {}
     const evt = data.evt || data.event || 'message'
