@@ -90,8 +90,10 @@ function handleSSEMessage(msg: any) {
       refreshDevices()
     }
     if (evt === 'state_change') {
-      // Backend already updated DB; refresh to get latest state
-      refreshDevices()
+      handleStateChange(data)
+    }
+    if (evt === 'on_ack') {
+      handleOnAck(data)
     }
     if (evt === 'command_status') {
       handleCommandStatus(data)
@@ -107,6 +109,61 @@ function handleSSEMessage(msg: any) {
   }
 }
 
+function handleOnAck(data: any) {
+  const ieee = data.ieee
+  const ok = data.ok
+  if (!ieee || ok === undefined) return
+  const device = state.devices.find(d => d.ieee === ieee)
+  if (device) {
+    if (!device.state) device.state = {}
+    const epKey = '1'
+    if (!device.state[epKey]) device.state[epKey] = {}
+    device.state[epKey].on = Boolean(ok)
+  }
+}
+
+function handleStateChange(data: any) {
+  const ieee = data.ieee_addr
+  if (!ieee) return
+  const device = state.devices.find(d => d.ieee === ieee)
+  if (!device) return
+  if (!device.state) device.state = {}
+
+  const changes = data.changes || []
+  if (changes.length > 0) {
+    for (const change of changes) {
+      const cluster = change.cluster || ''
+      const attr = change.attribute || ''
+      const value = change.value
+      const epKey = '1' // read_attr doesn't specify endpoint in changes; assume 1
+      if (!device.state[epKey]) device.state[epKey] = {}
+
+      const clusterId = parseInt(cluster, 16)
+      const attrId = parseInt(attr, 16)
+
+      if (clusterId === 0x0006 && attrId === 0x0000) {
+        device.state[epKey].on = Boolean(value)
+      } else if (clusterId === 0x0008 && attrId === 0x0000) {
+        device.state[epKey].level = Number(value)
+      } else if (clusterId === 0x0300) {
+        if (attrId === 0x0000) device.state[epKey].hue = Number(value)
+        else if (attrId === 0x0001) device.state[epKey].sat = Number(value)
+        else device.state[epKey].color = value
+      }
+    }
+  } else {
+    // Old flat format fallback
+    const epKey = String(data.endpoint || '1')
+    if (!device.state[epKey]) device.state[epKey] = {}
+    const clusterId = data.cluster_id
+    const attrId = data.attr_id
+    const value = data.value
+    if (clusterId === 6 && attrId === 0) device.state[epKey].on = Boolean(value)
+    else if (clusterId === 8) device.state[epKey].level = Number(value)
+    else if (clusterId === 768) device.state[epKey].color = value
+  }
+}
+
 function handleCommandStatus(data: any) {
   const correlationId = data.correlation_id
   const status = data.status
@@ -115,8 +172,14 @@ function handleCommandStatus(data: any) {
   const pending = state.pendingCommands.get(correlationId)
   if (!pending) return
 
+  // Ignore timeout — on_ack or state_change will eventually update the real state
+  if (status === 'timeout') {
+    logEvent(`Command ${pending.action} timeout for ${pending.ieee} (ignored, waiting for on_ack/state_change)`)
+    state.pendingCommands.delete(correlationId)
+    return
+  }
+
   if (status === 'completed') {
-    // Optimistically update local device state based on command
     const device = state.devices.find(d => d.ieee === pending.ieee)
     if (device) {
       const epKey = String(pending.endpoint || '1')
@@ -127,7 +190,7 @@ function handleCommandStatus(data: any) {
       else if (pending.action === 'toggle') device.state[epKey].on = !device.state[epKey].on
     }
     state.pendingCommands.delete(correlationId)
-  } else if (status === 'failed' || status === 'timeout') {
+  } else if (status === 'failed') {
     logEvent(`Command ${pending.action} failed for ${pending.ieee}`)
     state.pendingCommands.delete(correlationId)
   } else if (status === 'pending' || status === 'delivered') {
@@ -185,6 +248,41 @@ async function refreshPorts(): Promise<string[]> {
   }
 }
 
+let _pollTimer: ReturnType<typeof setInterval> | null = null
+
+function startPolling() {
+  if (_pollTimer) return
+  _pollTimer = setInterval(() => {
+    if (!state.isConnected) return
+    for (const device of state.devices) {
+      if (device.online === false) continue
+      // Poll OnOff (0x0006/0x0000) and Level (0x0008/0x0000) for each endpoint
+      const endpoints = device.endpoints || []
+      for (const ep of endpoints) {
+        const epId = ep.id
+        const clusters = ep.clusters || []
+        if (clusters.includes(6)) {
+          api.readAttr(device.ieee, epId, '0x0006', '0x0000').catch(() => {})
+        }
+        if (clusters.includes(8)) {
+          api.readAttr(device.ieee, epId, '0x0008', '0x0000').catch(() => {})
+        }
+      }
+      // If no endpoints reported, try EP 1 blindly for backward compat
+      if (endpoints.length === 0) {
+        api.readAttr(device.ieee, 1, '0x0006', '0x0000').catch(() => {})
+      }
+    }
+  }, 5000)
+}
+
+function stopPolling() {
+  if (_pollTimer) {
+    clearInterval(_pollTimer)
+    _pollTimer = null
+  }
+}
+
 async function connect(port: string): Promise<boolean> {
   try {
     const data = await api.connectPort(port)
@@ -193,6 +291,7 @@ async function connect(port: string): Promise<boolean> {
       state.currentPort = port
       logEvent(`Connected: ${port}`)
       startSSE()
+      startPolling()
       await refreshDevices()
       return true
     } else {
@@ -212,6 +311,7 @@ async function disconnect() {
   state.isConnected = false
   state.currentPort = null
   state.devices = []
+  stopPolling()
   stopSSE()
   logEvent('Disconnected')
 }
@@ -238,6 +338,7 @@ async function restoreConnection() {
       state.isConnected = true
       state.currentPort = data.port
       startSSE()
+      startPolling()
       await refreshDevices()
     }
   } catch {

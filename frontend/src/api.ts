@@ -21,6 +21,11 @@ export const sendCommand = (ieee: string, action: string, endpoint?: number, par
   })
 export const renameDevice = (ieee: string, name: string) => api<any>(`/api/devices/${ieee}/rename`, { method: 'PATCH', body: JSON.stringify({ name }) })
 export const deleteDevice = (ieee: string) => api<any>(`/api/devices/${ieee}`, { method: 'DELETE' })
+export const readAttr = (ieee: string, endpoint: number | undefined, cluster: string, attribute: string) =>
+  api<{correlation_id: string; status: string}>(`/api/devices/${ieee}/read-attr`, {
+    method: 'POST',
+    body: JSON.stringify({ endpoint, cluster, attribute })
+  })
 export const permitJoin = (duration: number) => api<any>('/api/network/permit-join', { method: 'POST', body: JSON.stringify({ duration }) })
 export const listScenarios = () => api<any[]>('/api/scenarios')
 export const createScenario = (payload: any) => api<any>('/api/scenarios', { method: 'POST', body: JSON.stringify(payload) })

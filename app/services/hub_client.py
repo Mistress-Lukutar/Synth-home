@@ -111,6 +111,25 @@ class HubClient:
         await self.send_raw(payload)
         return {"correlation_id": correlation_id, "status": "pending"}
 
+    async def read_attr(
+        self, ieee: str, endpoint: Optional[int], cluster: str, attribute: str
+    ) -> Dict[str, Any]:
+        """Send a read_attr command to the hub."""
+        import uuid
+
+        correlation_id = f"corr-{uuid.uuid4().hex[:12]}"
+        payload: Dict[str, Any] = {
+            "cmd": "read_attr",
+            "ieee": ieee,
+            "cluster": cluster,
+            "attribute": attribute,
+            "correlation_id": correlation_id,
+        }
+        if endpoint:
+            payload["endpoint"] = endpoint
+        await self.send_raw(payload)
+        return {"correlation_id": correlation_id, "status": "pending"}
+
     async def permit_join(self, duration: int) -> Dict[str, Any]:
         """Open the Zigbee network for joining."""
         await self.send_raw({"cmd": "permit", "duration": duration})
