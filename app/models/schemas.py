@@ -10,6 +10,7 @@ class ConnectRequest(BaseModel):
 
 class CommandRequest(BaseModel):
     action: str = Field(default="toggle", description="Command action: on, off, toggle, level, color")
+    endpoint: Optional[int] = Field(default=None, description="Target endpoint ID (auto-selected if omitted)")
     params: dict = Field(default_factory=dict, description="Additional command parameters")
 
 
@@ -24,7 +25,8 @@ class RenameRequest(BaseModel):
 class DeviceResponse(BaseModel):
     ieee: str
     name: Optional[str] = None
-    endpoint: Optional[int] = None
+    endpoints: Optional[list] = None
+    state: Optional[dict] = None
     online: bool = True
 
 
@@ -46,6 +48,11 @@ class RenameResponse(BaseModel):
     success: bool
     ieee: str
     name: str
+
+
+class CommandResponse(BaseModel):
+    correlation_id: str
+    status: str = "pending"
 
 
 class StatusResponse(BaseModel):

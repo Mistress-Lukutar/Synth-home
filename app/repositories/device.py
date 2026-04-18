@@ -39,10 +39,8 @@ class DeviceRepository(BaseRepository[Device]):
                     "ieee": device.ieee_addr,
                     "name": alias_name or "Zigbee Device",
                     "network_addr": device.network_addr,
-                    "endpoint": device.endpoint,
-                    "supports_hs": device.supports_hs,
-                    "supports_xy": device.supports_xy,
-                    "supports_ct": device.supports_ct,
+                    "endpoints": device.endpoints or [],
+                    "state": device.state or {},
                     "online": device.online,
                     "last_command": device.last_command,
                 }

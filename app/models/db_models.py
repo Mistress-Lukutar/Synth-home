@@ -26,10 +26,8 @@ class Device(Base):
 
     ieee_addr: Mapped[str] = mapped_column(String(32), primary_key=True)
     network_addr: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
-    endpoint: Mapped[Optional[int]] = mapped_column(nullable=True)
-    supports_hs: Mapped[bool] = mapped_column(Boolean, default=False)
-    supports_xy: Mapped[bool] = mapped_column(Boolean, default=False)
-    supports_ct: Mapped[bool] = mapped_column(Boolean, default=False)
+    endpoints: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    state: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     online: Mapped[bool] = mapped_column(Boolean, default=True)
     last_command: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     last_seen: Mapped[datetime] = mapped_column(default=utc_now, onupdate=utc_now)

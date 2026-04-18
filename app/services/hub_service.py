@@ -64,22 +64,8 @@ class HubService:
         if not self.is_connected():
             raise HubConnectionError()
         result = await self._client.send_command(ieee, action, params)
-        logger.info("command_sent", ieee=ieee, action=action)
-        # Persist last command for UI state restoration
-        if action in ("on", "off", "toggle"):
-            await self._update_last_command(ieee, action)
+        logger.info("command_sent", ieee=ieee, action=action, correlation_id=result.get("correlation_id"))
         return result
-
-    async def _update_last_command(self, ieee: str, action: str) -> None:
-        try:
-            async with async_session() as session:
-                repo = DeviceRepository(session)
-                device = await repo.get_by_ieee(ieee)
-                if device:
-                    device.last_command = action
-                    await session.commit()
-        except Exception:
-            pass
 
     async def permit_join(self, duration: int) -> Dict[str, Any]:
         if not self.is_connected():
@@ -113,18 +99,21 @@ class HubService:
                         "ieee": d.get("ieee_addr", ""),
                         "name": d.get("name") or "Zigbee Device",
                         "network_addr": d.get("network_addr"),
-                        "endpoint": d.get("endpoint"),
-                        "supports_hs": d.get("supports_hs", False),
-                        "supports_xy": d.get("supports_xy", False),
-                        "supports_ct": d.get("supports_ct", False),
+                        "endpoints": d.get("endpoints", []),
                         "online": True,
                     }
                 )
             self._devices = mapped
             self._spawn_background(self._sync_devices(mapped))
 
+        if evt == "command_status":
+            self._spawn_background(self._handle_command_status(data))
+
+        if evt == "state_change":
+            self._spawn_background(self._handle_state_change(data))
+
         # Publish domain events for downstream consumers (scheduler, SSE, etc.)
-        if evt in ("device_joined", "device_left", "state_change", "command_failed"):
+        if evt in ("device_joined", "device_left", "state_change", "command_failed", "command_status"):
             self._spawn_background(
                 self._event_bus.publish("device_event", {"event": evt, "data": data})
             )
@@ -144,13 +133,80 @@ class HubService:
                 await repo.upsert(
                     ieee,
                     network_addr=d.get("network_addr"),
-                    endpoint=d.get("endpoint"),
-                    supports_hs=d.get("supports_hs", False),
-                    supports_xy=d.get("supports_xy", False),
-                    supports_ct=d.get("supports_ct", False),
+                    endpoints=d.get("endpoints", []),
                     online=d.get("online", True),
                 )
             await session.commit()
+
+    async def _handle_command_status(self, data: Dict[str, Any]) -> None:
+        """Update device state in DB based on command_status events."""
+        status = data.get("status")
+        ieee = data.get("ieee_addr")
+        cluster_id = data.get("cluster_id")
+        attr_id = data.get("attr_id")
+        endpoint_id = data.get("endpoint")
+        if not ieee or not cluster_id:
+            return
+        try:
+            async with async_session() as session:
+                repo = DeviceRepository(session)
+                device = await repo.get_by_ieee(ieee)
+                if not device:
+                    return
+                state = device.state or {}
+                ep_key = str(endpoint_id or "1")
+                if ep_key not in state:
+                    state[ep_key] = {}
+                if status == "completed" and cluster_id == 6 and attr_id == 0:
+                    # OnOff cluster — determine on/off from context or payload
+                    value = data.get("value")
+                    if value is not None:
+                        state[ep_key]["on"] = bool(value)
+                    else:
+                        # Fallback: infer from command if value not present
+                        pass
+                elif status == "completed" and cluster_id == 8:
+                    value = data.get("value")
+                    if value is not None:
+                        state[ep_key]["level"] = int(value)
+                elif status == "completed" and cluster_id == 768:
+                    value = data.get("value")
+                    if value is not None:
+                        state[ep_key]["color"] = value
+                device.state = state
+                await session.commit()
+        except Exception:
+            logger.exception("command_status_db_update_failed")
+
+    async def _handle_state_change(self, data: Dict[str, Any]) -> None:
+        """Merge attribute report into device state."""
+        ieee = data.get("ieee_addr")
+        endpoint_id = data.get("endpoint")
+        cluster_id = data.get("cluster_id")
+        attr_id = data.get("attr_id")
+        value = data.get("value")
+        if not ieee or cluster_id is None or attr_id is None or value is None:
+            return
+        try:
+            async with async_session() as session:
+                repo = DeviceRepository(session)
+                device = await repo.get_by_ieee(ieee)
+                if not device:
+                    return
+                state = device.state or {}
+                ep_key = str(endpoint_id or "1")
+                if ep_key not in state:
+                    state[ep_key] = {}
+                if cluster_id == 6 and attr_id == 0:
+                    state[ep_key]["on"] = bool(value)
+                elif cluster_id == 8:
+                    state[ep_key]["level"] = int(value)
+                elif cluster_id == 768:
+                    state[ep_key]["color"] = value
+                device.state = state
+                await session.commit()
+        except Exception:
+            logger.exception("state_change_db_update_failed")
 
     def _spawn_background(self, coro: asyncio.coroutines) -> None:
         """Spawn a background task and keep a weak reference for cleanup."""

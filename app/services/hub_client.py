@@ -89,12 +89,15 @@ class HubClient:
     async def send_command(
         self, ieee: str, action: str, params: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Send a device command to the hub."""
-        payload: Dict[str, Any] = {"cmd": action, "ieee": ieee}
+        """Send a device command to the hub. Returns correlation_id for async tracking."""
+        import uuid
+
+        correlation_id = f"corr-{uuid.uuid4().hex[:12]}"
+        payload: Dict[str, Any] = {"cmd": action, "ieee": ieee, "correlation_id": correlation_id}
         if params:
             payload.update(params)
         await self.send_raw(payload)
-        return {"success": True, "status": "sent"}
+        return {"correlation_id": correlation_id, "status": "pending"}
 
     async def permit_join(self, duration: int) -> Dict[str, Any]:
         """Open the Zigbee network for joining."""
