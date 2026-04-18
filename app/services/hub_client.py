@@ -62,9 +62,10 @@ class HubClient:
             try:
                 chunk = await asyncio.to_thread(self._read_chunk)
                 if chunk:
-                    logger.debug("serial_raw_read", raw_bytes=chunk.decode("utf-8", errors="replace")[:500])
+                    decoded = chunk.decode("utf-8", errors="replace")
+                    logger.info("serial_chunk_received", byte_count=len(chunk), raw_preview=decoded[:400])
                     messages = self._protocol.feed(chunk)
-                    logger.debug("serial_parsed_messages", message_count=len(messages))
+                    logger.info("serial_parsed_result", message_count=len(messages), remaining_buffer_len=len(self._protocol._buffer))
                     if self._event_bus:
                         for msg in messages:
                             await self._event_bus.publish("hub_serial", {"direction": "rx", "payload": msg})

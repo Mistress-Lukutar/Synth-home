@@ -51,3 +51,15 @@ async def get_status(
         "connected": service.is_connected(),
         "port": service.get_port(),
     }
+
+
+@router.post("/api/debug/hub-raw")
+async def debug_hub_raw(
+    payload: dict,
+    service: HubService = Depends(get_hub_service),
+) -> StatusResponse:
+    """Send a raw JSON payload directly to the hub serial port."""
+    if not service.is_connected():
+        return StatusResponse(success=False, error="Hub not connected")
+    await service._client.send_raw(payload)
+    return StatusResponse(success=True)
