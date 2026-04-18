@@ -23,6 +23,15 @@ async def list_devices(
     await service.fetch_devices()
     repo = DeviceRepository(db)
     devices = await repo.list_with_aliases()
+    import structlog
+    logger = structlog.get_logger(__name__)
+    for d in devices:
+        logger.info(
+            "api_devices_response_item",
+            ieee=d["ieee"],
+            endpoint_count=len(d.get("endpoints") or []),
+            endpoints=d.get("endpoints"),
+        )
     return {"success": True, "devices": devices}
 
 

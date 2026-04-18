@@ -45,6 +45,39 @@ class ProtocolHandler:
 
     def _handle_single(self, data: Dict[str, Any]) -> None:
         evt = data.get("evt") or data.get("event")
+        ieee = data.get("ieee_addr") or data.get("ieee")
+        endpoints = data.get("endpoints")
+        devices = data.get("devices")
+        correlation_id = data.get("correlation_id")
+        status = data.get("status")
+
+        # Verbose raw logging for debugging firmware compatibility
+        if evt == "device_list":
+            logger.info(
+                "hub_raw_device_list",
+                device_count=len(devices) if isinstance(devices, list) else None,
+                first_device_summary=str(devices[0])[:300] if isinstance(devices, list) and devices else None,
+                raw_keys=list(data.keys()),
+            )
+        elif evt in ("command_status", "state_change", "device_joined", "device_left"):
+            logger.info(
+                "hub_raw_event",
+                event=evt,
+                ieee=ieee,
+                correlation_id=correlation_id,
+                status=status,
+                raw_keys=list(data.keys()),
+                raw_summary=str(data)[:400],
+            )
+        else:
+            logger.debug(
+                "hub_raw_message",
+                event=evt,
+                ieee=ieee,
+                raw_keys=list(data.keys()),
+                raw_summary=str(data)[:300],
+            )
+
         if self._list_future is not None and not self._list_future.done():
             if evt == "device_list":
                 self._list_future.set_result(data.get("devices", []))
