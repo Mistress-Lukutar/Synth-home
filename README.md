@@ -5,8 +5,9 @@ Web interface for managing a Zigbee coordinator hub over USB Serial. FastAPI bac
 ## Features
 
 - **COM-port discovery** and real-time hub connection management
-- **Device listing** with friendly aliases, inline renaming, and on/off toggle
-- **Device control** — on / off / toggle / level / color commands
+- **Device listing** with friendly aliases, inline renaming, and per-endpoint controls
+- **Multi-endpoint device control** — on/off, level, color (HS/XY/CT) per endpoint
+- **Async command lifecycle** — `202 Accepted` + `correlation_id` + `command_status` SSE confirmations
 - **Zigbee network management** — permit joining for new devices
 - **Rule-based scenarios** with manual, schedule (cron), and device-event triggers
 - **Drag-and-drop** scenario reordering with persistent sort order
@@ -127,7 +128,8 @@ static/dist/         # Built frontend (mounted as SPA)
 | `/api/disconnect` | POST | Disconnect from hub |
 | `/api/status` | GET | Connection status |
 | `/api/devices` | GET | List Zigbee devices |
-| `/api/devices/{ieee}/command` | POST | Send command to device |
+| `/api/devices/{ieee}/command` | POST | Send command to device (returns `202` + `correlation_id`) |
+| `/api/devices/{ieee}/ep/{ep}/command` | POST | Send command to specific endpoint |
 | `/api/devices/{ieee}/rename` | PATCH | Rename device alias |
 | `/api/network/permit-join` | POST | Open network for joining |
 | `/api/scenarios` | GET / POST | List / create scenarios |
@@ -137,6 +139,20 @@ static/dist/         # Built frontend (mounted as SPA)
 | `/events` | GET | SSE stream for real-time events |
 
 All endpoints (except `/health` and SSE `/events`) require the `X-API-Key` header.
+
+### Async Command Lifecycle
+
+Commands return `202 Accepted` with a `correlation_id`. The hub broadcasts `command_status` events over SSE:
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | Command accepted, not yet sent to Zigbee network |
+| `delivered` | ZCL Default Response received |
+| `completed` | Attribute report confirms value applied |
+| `failed` | ZCL error or APS transmission failure |
+| `timeout` | No confirmation within 5 seconds |
+
+The frontend tracks pending commands and updates UI state only upon `completed` (or reverts on `failed`/`timeout`).
 
 ## Security
 

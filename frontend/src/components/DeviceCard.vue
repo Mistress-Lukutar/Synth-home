@@ -16,24 +16,72 @@
       </div>
       <div class="device-details">
         <span class="device-ieee">{{ device.ieee }}</span>
-        <span>EP {{ device.endpoint ?? '-' }}</span>
         <span :class="device.online !== false ? 'device-online' : 'device-offline'">{{ device.online !== false ? 'Online' : 'Offline' }}</span>
       </div>
     </div>
-    <div class="device-actions">
-      <div
-        class="toggle-switch"
-        :class="{ on: localState === 'on', pending: localState === 'pending' }"
-        @click="toggle"
-      >
-        <div class="knob"></div>
+    <div class="device-endpoints">
+      <div v-for="ep in device.endpoints || []" :key="ep.id" class="endpoint-row">
+        <div class="ep-header">
+          <span class="ep-label">EP{{ ep.id }}</span>
+          <span class="ep-type">{{ ep.type }}</span>
+        </div>
+        <div class="ep-controls">
+          <!-- On/Off toggle (cluster 0x0006 = 6) -->
+          <div
+            v-if="hasCluster(ep, 6)"
+            class="toggle-switch"
+            :class="{ on: getState(ep.id, 'on') === true, pending: isPending(ep.id, 'on') || isPending(ep.id, 'off') || isPending(ep.id, 'toggle') }"
+            @click="toggleOnOff(ep.id)"
+            title="Toggle On/Off"
+          >
+            <div class="knob"></div>
+          </div>
+
+          <!-- Level slider (cluster 0x0008 = 8) -->
+          <div v-if="hasCluster(ep, 8)" class="level-control">
+            <input
+              type="range"
+              min="0"
+              max="255"
+              :value="getState(ep.id, 'level') ?? 128"
+              @change="(e) => setLevel(ep.id, Number((e.target as HTMLInputElement).value))"
+              :disabled="isPending(ep.id, 'level')"
+            />
+          </div>
+
+          <!-- Color control (cluster 0x0300 = 768) -->
+          <div v-if="hasCluster(ep, 768)" class="color-control">
+            <input
+              v-if="ep.color_caps?.hs || ep.color_caps?.xy"
+              type="color"
+              :value="getColorHex(ep.id)"
+              @change="(e) => setColor(ep.id, (e.target as HTMLInputElement).value)"
+              :disabled="isPending(ep.id, 'color')"
+              class="color-picker"
+            />
+            <div v-if="ep.color_caps?.ct" class="ct-control">
+              <input
+                type="range"
+                min="153"
+                max="500"
+                :value="getState(ep.id, 'ct') ?? 300"
+                @change="(e) => setCt(ep.id, Number((e.target as HTMLInputElement).value))"
+                :disabled="isPending(ep.id, 'color')"
+              />
+              <span class="ct-label">CT</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div v-if="!(device.endpoints || []).length" class="endpoint-row">
+        <span class="ep-type">No endpoints reported</span>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, watch } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { useHubStore } from '../composables/useHubStore'
 import * as api from '../api'
 
@@ -43,17 +91,6 @@ const store = useHubStore()
 const editing = ref(false)
 const editName = ref('')
 const inputRef = ref<HTMLInputElement | null>(null)
-
-// Initialize from persisted last_command; default off
-const localState = ref<'off' | 'on' | 'pending'>(
-  props.device.last_command === 'on' ? 'on' : 'off'
-)
-
-// Sync if parent data changes (e.g. after refresh)
-watch(() => props.device.last_command, (cmd) => {
-  if (cmd === 'on') localState.value = 'on'
-  else if (cmd === 'off') localState.value = 'off'
-})
 
 const displayName = computed(() => props.device.name || 'Unknown Device')
 
@@ -79,27 +116,61 @@ async function save() {
   }
 }
 
-function delay(ms: number) {
-  return new Promise(resolve => setTimeout(resolve, ms))
+function hasCluster(ep: any, clusterId: number): boolean {
+  return (ep.clusters || []).includes(clusterId)
 }
 
-async function toggle() {
-  if (!store.state.isConnected || localState.value === 'pending') return
+function getState(epId: number, key: string): any {
+  const state = props.device.state || {}
+  return state[String(epId)]?.[key]
+}
 
-  const target = localState.value === 'on' ? 'off' : 'on'
-  const action = target === 'on' ? 'on' : 'off'
-  localState.value = 'pending'
+function getColorHex(epId: number): string {
+  const color = getState(epId, 'color')
+  if (typeof color === 'string' && color.startsWith('#')) return color
+  // Default fallback
+  return '#ffffff'
+}
 
-  store.logEvent(`Command ${action} → ${props.device.ieee}`)
-  try {
-    const sendPromise = api.sendCommand(props.device.ieee, action)
-    // Ensure pending state is visible for at least 300ms
-    await Promise.all([sendPromise, delay(300)])
-    localState.value = target
-  } catch (e: any) {
-    store.logEvent('Command error: ' + e.message)
-    localState.value = target === 'on' ? 'off' : 'on'
+function isPending(epId: number, action: string): boolean {
+  for (const [_, pending] of store.state.pendingCommands) {
+    if (pending.ieee === props.device.ieee && pending.endpoint === epId && pending.action === action) {
+      return true
+    }
   }
+  return false
+}
+
+async function sendAndTrack(action: string, epId: number, params?: object) {
+  if (!store.state.isConnected) return
+  try {
+    const result = await api.sendCommand(props.device.ieee, action, epId, params)
+    store.state.pendingCommands.set(result.correlation_id, {
+      ieee: props.device.ieee,
+      endpoint: epId,
+      action,
+    })
+  } catch (e: any) {
+    store.logEvent(`Command ${action} error: ` + e.message)
+  }
+}
+
+async function toggleOnOff(epId: number) {
+  const current = getState(epId, 'on') === true
+  const action = current ? 'off' : 'on'
+  await sendAndTrack(action, epId)
+}
+
+async function setLevel(epId: number, level: number) {
+  await sendAndTrack('level', epId, { level })
+}
+
+async function setColor(epId: number, hex: string) {
+  await sendAndTrack('color', epId, { hex })
+}
+
+async function setCt(epId: number, ct: number) {
+  await sendAndTrack('color', epId, { ct })
 }
 </script>
 
@@ -110,11 +181,12 @@ async function toggle() {
   border-radius: 10px;
   padding: 12px 16px;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 12px;
   transition: all 0.2s;
 }
 .device-card:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.2); }
+
 .device-info { display: flex; flex-direction: column; gap: 4px; }
 .editable-title { display: flex; align-items: center; gap: 8px; cursor: text; }
 .title-text { border-bottom: 1px dashed transparent; transition: border-color 0.2s; font-weight: 600; font-size: 1rem; color: #fff; }
@@ -138,7 +210,21 @@ async function toggle() {
 .device-ieee { font-family: 'SF Mono', Monaco, monospace; }
 .device-online { color: #00ff88; }
 .device-offline { color: #ff4444; }
-.device-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+.device-endpoints { display: flex; flex-direction: column; gap: 10px; }
+.endpoint-row {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.05);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ep-header { display: flex; align-items: center; gap: 8px; }
+.ep-label { font-size: 0.75rem; text-transform: uppercase; color: #888; letter-spacing: 0.5px; }
+.ep-type { font-size: 0.8rem; color: #aaa; }
+.ep-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 
 /* Toggle Switch */
 .toggle-switch {
@@ -151,9 +237,7 @@ async function toggle() {
   transition: background 0.3s;
   flex-shrink: 0;
 }
-.toggle-switch.pending {
-  cursor: wait;
-}
+.toggle-switch.pending { cursor: wait; }
 .toggle-switch .knob {
   width: 24px;
   height: 24px;
@@ -165,20 +249,33 @@ async function toggle() {
   transition: left 0.3s;
   box-shadow: 0 1px 3px rgba(0,0,0,0.3);
 }
-.toggle-switch.on {
-  background: #00ff88;
-}
-.toggle-switch.on .knob {
-  left: 29px;
-}
-.toggle-switch.pending {
-  background: #ffaa00;
-}
-.toggle-switch.pending .knob {
-  left: 16px;
+.toggle-switch.on { background: #00ff88; }
+.toggle-switch.on .knob { left: 29px; }
+.toggle-switch.pending { background: #ffaa00; }
+.toggle-switch.pending .knob { left: 16px; }
+
+/* Level slider */
+.level-control input[type="range"] {
+  width: 120px;
+  accent-color: #00ff88;
 }
 
+/* Color picker */
+.color-control { display: flex; gap: 10px; align-items: center; }
+.color-picker {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  background: none;
+}
+.ct-control { display: flex; align-items: center; gap: 6px; }
+.ct-control input[type="range"] { width: 80px; accent-color: #ffaa00; }
+.ct-label { font-size: 0.7rem; color: #888; }
+
 @media (max-width: 768px) {
-  .device-card { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .device-card { padding: 10px 12px; }
+  .ep-controls { flex-direction: column; align-items: flex-start; }
 }
 </style>

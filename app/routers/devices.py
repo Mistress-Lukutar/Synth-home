@@ -2,11 +2,11 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import require_connection, get_db
-from app.models.schemas import CommandRequest, DevicesResponse, RenameRequest, RenameResponse, StatusResponse
+from app.models.schemas import CommandRequest, CommandResponse, DevicesResponse, RenameRequest, RenameResponse, StatusResponse
 from app.repositories.device import DeviceRepository
 from app.repositories.device_alias import DeviceAliasRepository
 from app.services.hub_service import HubService
@@ -26,15 +26,18 @@ async def list_devices(
     return {"success": True, "devices": devices}
 
 
-@router.post("/api/devices/{ieee}/command")
+@router.post("/api/devices/{ieee}/command", status_code=status.HTTP_202_ACCEPTED, response_model=CommandResponse)
 async def device_command(
     ieee: str,
     req: CommandRequest,
     service: Annotated[HubService, Depends(require_connection)],
-) -> StatusResponse:
-    """Send a command to a specific Zigbee device."""
-    result = await service.send_command(ieee, req.action, req.params)
-    return StatusResponse(success=True, data=result)
+) -> CommandResponse:
+    """Send a command to a specific Zigbee device. Returns 202 with correlation_id."""
+    params = dict(req.params)
+    if req.endpoint is not None:
+        params["endpoint"] = req.endpoint
+    result = await service.send_command(ieee, req.action, params)
+    return CommandResponse(correlation_id=result["correlation_id"], status=result["status"])
 
 
 @router.patch("/api/devices/{ieee}/rename", response_model=RenameResponse)

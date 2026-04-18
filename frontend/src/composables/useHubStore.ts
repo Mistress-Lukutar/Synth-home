@@ -1,10 +1,18 @@
 import { reactive, readonly } from 'vue'
 import * as api from '../api'
 
+export interface Endpoint {
+  id: number
+  clusters: number[]
+  type: string
+  color_caps: { hs: boolean; xy: boolean; ct: boolean; color_loop: boolean } | null
+}
+
 export interface Device {
   ieee: string
   name?: string
-  endpoint?: number
+  endpoints: Endpoint[]
+  state?: Record<string, any>
   online?: boolean
 }
 
@@ -24,12 +32,19 @@ export interface HubEvent {
   text: string
 }
 
+interface PendingCommand {
+  ieee: string
+  endpoint?: number
+  action: string
+}
+
 interface State {
   isConnected: boolean
   currentPort: string | null
   devices: Device[]
   scenarios: Scenario[]
   events: HubEvent[]
+  pendingCommands: Map<string, PendingCommand>
   sseReconnectDelay: number
   evtSource: EventSource | null
   sseReconnectTimer: ReturnType<typeof setTimeout> | null
@@ -42,6 +57,7 @@ const state = reactive<State>({
   devices: [],
   scenarios: [],
   events: [],
+  pendingCommands: new Map(),
   sseReconnectDelay: 1000,
   evtSource: null,
   sseReconnectTimer: null,
@@ -65,8 +81,15 @@ function handleSSEMessage(msg: any) {
     if (evt !== 'device_list') {
       logEvent(`Hub: ${evt}`)
     }
-    if (['device_joined', 'device_left', 'state_change'].includes(evt)) {
+    if (['device_joined', 'device_left'].includes(evt)) {
       refreshDevices()
+    }
+    if (evt === 'state_change') {
+      // Backend already updated DB; refresh to get latest state
+      refreshDevices()
+    }
+    if (evt === 'command_status') {
+      handleCommandStatus(data)
     }
   } else if (msg.type === 'scenario_triggered') {
     logEvent(`⏰ Scenario triggered: ${msg.scenario_name} (id=${msg.scenario_id})`)
@@ -76,6 +99,34 @@ function handleSSEMessage(msg: any) {
     logEvent(`❌ Scenario FAILED: ${msg.scenario_name} — ${msg.error}`)
   } else if (msg.type === 'scenario_skipped') {
     logEvent(`⏭️ Scenario skipped: ${msg.scenario_name} — ${msg.reason}`)
+  }
+}
+
+function handleCommandStatus(data: any) {
+  const correlationId = data.correlation_id
+  const status = data.status
+  if (!correlationId) return
+
+  const pending = state.pendingCommands.get(correlationId)
+  if (!pending) return
+
+  if (status === 'completed') {
+    // Optimistically update local device state based on command
+    const device = state.devices.find(d => d.ieee === pending.ieee)
+    if (device) {
+      const epKey = String(pending.endpoint || '1')
+      if (!device.state) device.state = {}
+      if (!device.state[epKey]) device.state[epKey] = {}
+      if (pending.action === 'on') device.state[epKey].on = true
+      else if (pending.action === 'off') device.state[epKey].on = false
+      else if (pending.action === 'toggle') device.state[epKey].on = !device.state[epKey].on
+    }
+    state.pendingCommands.delete(correlationId)
+  } else if (status === 'failed' || status === 'timeout') {
+    logEvent(`Command ${pending.action} failed for ${pending.ieee}`)
+    state.pendingCommands.delete(correlationId)
+  } else if (status === 'pending' || status === 'delivered') {
+    // Intermediate states — keep waiting
   }
 }
 

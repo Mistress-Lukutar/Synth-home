@@ -14,7 +14,11 @@ export const connectPort = (port: string) => api<{ success: boolean; error?: str
 export const disconnectPort = () => api<{ success: boolean }>('/api/disconnect', { method: 'POST' })
 export const getStatus = () => api<{ connected: boolean; port: string | null }>('/api/status')
 export const listDevices = () => api<{ success: boolean; devices: any[] }>('/api/devices')
-export const sendCommand = (ieee: string, action: string) => api<any>(`/api/devices/${ieee}/command`, { method: 'POST', body: JSON.stringify({ action }) })
+export const sendCommand = (ieee: string, action: string, endpoint?: number, params?: object) =>
+  api<{correlation_id: string; status: string}>(`/api/devices/${ieee}/command`, {
+    method: 'POST',
+    body: JSON.stringify({ action, endpoint, params })
+  })
 export const renameDevice = (ieee: string, name: string) => api<any>(`/api/devices/${ieee}/rename`, { method: 'PATCH', body: JSON.stringify({ name }) })
 export const permitJoin = (duration: number) => api<any>('/api/network/permit-join', { method: 'POST', body: JSON.stringify({ duration }) })
 export const listScenarios = () => api<any[]>('/api/scenarios')
