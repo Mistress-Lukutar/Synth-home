@@ -158,7 +158,25 @@ def _build_builtin_catalogue() -> list[NodeTypeMeta]:
             outputs=[
                 NodePortMeta(name="ack", label="Ack", type="bool", optional=True),
             ],
-            config_fields=[],
+            config_fields=[
+                NodeConfigField(
+                    name="mode",
+                    label="Color Mode",
+                    type="select",
+                    default="xy",
+                    options=[
+                        {"value": "xy", "label": "XY"},
+                        {"value": "hs", "label": "HS"},
+                        {"value": "ct", "label": "CT"},
+                    ],
+                ),
+                NodeConfigField(
+                    name="endpoint",
+                    label="Endpoint",
+                    type="number",
+                    default=1,
+                ),
+            ],
         ),
         # --- Color ---------------------------------------------------------
         NodeTypeMeta(

@@ -64,10 +64,20 @@ class DeviceSetColorExecutor(NodeExecutor):
         if ctx.hub_service is None or not ctx.hub_service.is_connected():
             logger.warning("device_set_color_no_hub", ieee=ieee)
             return {"ack": False}
-        params: dict = {"color": color}
+
+        mode = "xy"
+        endpoint = 1
+        if node.data:
+            mode = node.data.get("mode", "xy")
+            try:
+                endpoint = int(node.data.get("endpoint", 1))
+            except (TypeError, ValueError):
+                endpoint = 1
+
+        params: dict = {"hex": color, "mode": mode, "endpoint": endpoint}
         try:
             result = await ctx.hub_service.send_command(ieee, "color", params)
-            logger.info("device_set_color_executed", ieee=ieee, color=color)
+            logger.info("device_set_color_executed", ieee=ieee, color=color, mode=mode, endpoint=endpoint)
             return {"ack": True, "correlation_id": result.get("correlation_id")}
         except Exception as exc:
             logger.warning("device_set_color_failed", ieee=ieee, error=str(exc))
