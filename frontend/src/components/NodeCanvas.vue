@@ -456,6 +456,7 @@ function onMouseDown(e: MouseEvent) {
     if (!portHit.isInput) {
       state.mode = 'dragConnection'
       state.connectFrom = { nodeId: portHit.nodeId, output: portHit.portName }
+      _attachGlobalListeners()
       render()
       return
     }
@@ -468,23 +469,25 @@ function onMouseDown(e: MouseEvent) {
     state.dragNodeId = nodeHit.id
     state.dragNodeStart = { ...nodeHit.pos }
     emit('selectNode', nodeHit.id)
+    _attachGlobalListeners()
     render()
     return
   }
 
   // Empty space — pan camera
   state.mode = 'panCamera'
+  _attachGlobalListeners()
 }
 
 function onMouseMove(e: MouseEvent) {
   const m = getMousePos(e)
   const state = mouseState.value
-  const dx = (m.x - state.lastX) / camera.value.zoom
-  const dy = (m.y - state.lastY) / camera.value.zoom
 
   if (state.mode === 'dragNode' && state.dragNodeId) {
     const node = props.nodes.find((n) => n.id === state.dragNodeId)
     if (node && state.dragNodeStart) {
+      const dx = (m.x - state.startX) / camera.value.zoom
+      const dy = (m.y - state.startY) / camera.value.zoom
       const newNodes = props.nodes.map((n) =>
         n.id === state.dragNodeId
           ? { ...n, pos: { x: state.dragNodeStart!.x + dx, y: state.dragNodeStart!.y + dy } }
@@ -514,6 +517,8 @@ function onMouseMove(e: MouseEvent) {
 
 function onMouseUp(e: MouseEvent) {
   const state = mouseState.value
+  if (state.mode === 'idle') return
+
   const m = getMousePos(e)
 
   if (state.mode === 'dragConnection' && state.connectFrom && state.connectToPort) {
@@ -566,6 +571,21 @@ function onMouseUp(e: MouseEvent) {
   state.connectFrom = null
   state.connectToPort = null
   render()
+}
+
+function onWindowMouseMove(e: MouseEvent) {
+  onMouseMove(e)
+}
+
+function onWindowMouseUp(e: MouseEvent) {
+  window.removeEventListener('mousemove', onWindowMouseMove)
+  window.removeEventListener('mouseup', onWindowMouseUp)
+  onMouseUp(e)
+}
+
+function _attachGlobalListeners() {
+  window.addEventListener('mousemove', onWindowMouseMove)
+  window.addEventListener('mouseup', onWindowMouseUp)
 }
 
 function onWheel(e: WheelEvent) {
