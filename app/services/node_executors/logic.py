@@ -14,8 +14,11 @@ class FlowIfExecutor(NodeExecutor):
     node_type = "flow_if"
 
     async def execute(self, ctx: ExecutionContext, node, inputs):
+        triggered = bool(inputs.get("trigger", False))
         condition = bool(inputs.get("condition", False))
-        return {"true": condition, "false": not condition}
+        if triggered:
+            return {"true": condition, "false": not condition}
+        return {"true": False, "false": False}
 
 
 @register_executor

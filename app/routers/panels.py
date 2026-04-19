@@ -146,7 +146,7 @@ async def set_panel_input(
         raise HTTPException(status_code=404, detail="Panel not found")
 
     panel_state.set_input_value(panel_id, req.node_id, req.value)
-    result = await graph_executor.run(panel_id, db)
+    result = await graph_executor.run(panel_id, db, triggered_node_id=req.node_id)
     return {"success": True, "execution": result}
 
 

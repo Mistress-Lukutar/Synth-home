@@ -25,11 +25,13 @@ class ExecutionContext:
         graph_id: int,
         hub_service: HubService | None,
         panel_state_service: PanelStateService | None,
+        triggered_node_id: str | None = None,
     ) -> None:
         self.panel_id = panel_id
         self.graph_id = graph_id
         self.hub_service = hub_service
         self.panel_state_service = panel_state_service
+        self.triggered_node_id = triggered_node_id
         self._cache: dict[str, dict[str, Any]] = {}
 
     def get_cached(self, node_id: str) -> dict[str, Any] | None:

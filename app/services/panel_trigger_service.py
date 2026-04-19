@@ -138,7 +138,7 @@ class PanelTriggerService:
 
         async def _run() -> None:
             async with async_session() as session:
-                await self._graph_executor.run(panel_id, session)
+                await self._graph_executor.run(panel_id, session, triggered_node_id=node.id)
 
         def _wrapper() -> None:
             asyncio.create_task(_run())
@@ -178,7 +178,7 @@ class PanelTriggerService:
 
         async def _run() -> None:
             async with async_session() as session:
-                await self._graph_executor.run(panel_id, session)
+                await self._graph_executor.run(panel_id, session, triggered_node_id=node.id)
 
         def _handler(payload: dict[str, Any]) -> None:
             evt = payload.get("event")

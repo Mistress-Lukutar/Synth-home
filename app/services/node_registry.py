@@ -136,6 +136,7 @@ def _build_builtin_catalogue() -> list[NodeTypeMeta]:
             label="Set On/Off",
             description="Turn a device on or off.",
             inputs=[
+                NodePortMeta(name="trigger", label="Trigger", type="trigger"),
                 NodePortMeta(name="device", label="Device", type="device"),
                 NodePortMeta(name="state", label="State", type="bool"),
             ],
@@ -150,6 +151,7 @@ def _build_builtin_catalogue() -> list[NodeTypeMeta]:
             label="Set Color",
             description="Write a colour to a lamp.",
             inputs=[
+                NodePortMeta(name="trigger", label="Trigger", type="trigger"),
                 NodePortMeta(name="device", label="Device", type="device"),
                 NodePortMeta(name="color", label="Color", type="color"),
             ],
@@ -183,6 +185,7 @@ def _build_builtin_catalogue() -> list[NodeTypeMeta]:
             description="Toggle switch shown on the dashboard panel.",
             outputs=[
                 NodePortMeta(name="value", label="Value", type="bool"),
+                NodePortMeta(name="changed", label="Changed", type="trigger"),
             ],
             config_fields=[
                 NodeConfigField(name="label", label="Label", type="text", default="Switch"),
@@ -195,6 +198,7 @@ def _build_builtin_catalogue() -> list[NodeTypeMeta]:
             description="Slider or number input on the dashboard panel.",
             outputs=[
                 NodePortMeta(name="value", label="Value", type="int"),
+                NodePortMeta(name="changed", label="Changed", type="trigger"),
             ],
             config_fields=[
                 NodeConfigField(name="label", label="Label", type="text", default="Value"),
@@ -220,6 +224,7 @@ def _build_builtin_catalogue() -> list[NodeTypeMeta]:
             label="Number Display",
             description="Display an integer value on the dashboard panel.",
             inputs=[
+                NodePortMeta(name="trigger", label="Trigger", type="trigger"),
                 NodePortMeta(name="value", label="Value", type="int"),
             ],
             config_fields=[
@@ -234,6 +239,7 @@ def _build_builtin_catalogue() -> list[NodeTypeMeta]:
             label="Text Display",
             description="Display a text value on the dashboard panel.",
             inputs=[
+                NodePortMeta(name="trigger", label="Trigger", type="trigger"),
                 NodePortMeta(name="value", label="Value", type="string"),
             ],
             config_fields=[
@@ -290,6 +296,7 @@ def _build_builtin_catalogue() -> list[NodeTypeMeta]:
             label="If",
             description="Branch execution based on a boolean condition.",
             inputs=[
+                NodePortMeta(name="trigger", label="Trigger", type="trigger"),
                 NodePortMeta(name="condition", label="Condition", type="bool"),
             ],
             outputs=[

@@ -13,7 +13,7 @@ class DevicePickerExecutor(NodeExecutor):
 
     async def execute(self, ctx, node, inputs):
         ieee = node.data.get("ieee", "")
-        return {"device": {"ieee": ieee, "name": node.data.get("_device_name", "")}}
+        return {"device": {"ieee": ieee, "name": ""}}
 
 
 @register_executor
@@ -21,6 +21,10 @@ class DeviceSetOnOffExecutor(NodeExecutor):
     node_type = "device_set_on_off"
 
     async def execute(self, ctx, node, inputs):
+        triggered = bool(inputs.get("trigger", False))
+        if not triggered:
+            return {"ack": False}
+
         device = inputs.get("device")
         state = inputs.get("state")
         if not device or state is None:
@@ -46,6 +50,10 @@ class DeviceSetColorExecutor(NodeExecutor):
     node_type = "device_set_color"
 
     async def execute(self, ctx, node, inputs):
+        triggered = bool(inputs.get("trigger", False))
+        if not triggered:
+            return {"ack": False}
+
         device = inputs.get("device")
         color = inputs.get("color")
         if not device or not color:
@@ -56,7 +64,6 @@ class DeviceSetColorExecutor(NodeExecutor):
         if ctx.hub_service is None or not ctx.hub_service.is_connected():
             logger.warning("device_set_color_no_hub", ieee=ieee)
             return {"ack": False}
-        # Color can be hex string or dict with x,y — send as-is in params
         params: dict = {"color": color}
         try:
             result = await ctx.hub_service.send_command(ieee, "color", params)
