@@ -195,6 +195,55 @@ def _build_builtin_catalogue() -> list[NodeTypeMeta]:
             ],
             config_fields=[],
         ),
+        # --- Read device state ------------------------------------------------
+        NodeTypeMeta(
+            type="read_on_off",
+            category="device",
+            label="Read On/Off",
+            description="Read the current on/off state from cached device data.",
+            inputs=[
+                NodePortMeta(name="device", label="Device", type="device"),
+            ],
+            outputs=[
+                NodePortMeta(name="device", label="Device", type="device"),
+                NodePortMeta(name="on", label="On", type="bool"),
+            ],
+            config_fields=[
+                NodeConfigField(name="endpoint", label="Endpoint", type="number", default=1),
+            ],
+        ),
+        NodeTypeMeta(
+            type="read_level",
+            category="device",
+            label="Read Level",
+            description="Read the current brightness level from cached device data.",
+            inputs=[
+                NodePortMeta(name="device", label="Device", type="device"),
+            ],
+            outputs=[
+                NodePortMeta(name="device", label="Device", type="device"),
+                NodePortMeta(name="level", label="Level", type="int"),
+            ],
+            config_fields=[
+                NodeConfigField(name="endpoint", label="Endpoint", type="number", default=1),
+            ],
+        ),
+        NodeTypeMeta(
+            type="read_color",
+            category="device",
+            label="Read Color",
+            description="Read the current color from cached device data.",
+            inputs=[
+                NodePortMeta(name="device", label="Device", type="device"),
+            ],
+            outputs=[
+                NodePortMeta(name="device", label="Device", type="device"),
+                NodePortMeta(name="color", label="Color", type="color"),
+            ],
+            config_fields=[
+                NodeConfigField(name="endpoint", label="Endpoint", type="number", default=1),
+            ],
+        ),
         # --- Panel UI ------------------------------------------------------
         NodeTypeMeta(
             type="panel_switch_input",
