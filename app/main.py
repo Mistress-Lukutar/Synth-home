@@ -17,7 +17,7 @@ from app.exceptions import setup_exception_handlers
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.logging import StructuredLoggingMiddleware
-from app.routers import connection, devices, network, scenarios
+from app.routers import connection, devices, network, scenarios, panels, graphs, node_registry
 from app.services import sse_manager
 from app.services.event_bus import EventBus
 from app.services.hub_service import HubService
@@ -82,6 +82,45 @@ def create_app() -> FastAPI:
         app.state.scenario_service = scenario_service
         set_scenario_service(scenario_service)
 
+        # Node registry (populated once at startup)
+        from app.services.node_registry import create_node_registry
+        node_registry = create_node_registry()
+        app.state.node_registry = node_registry
+
+        # Panel state + graph executor
+        from app.services.panel_state_service import PanelStateService
+        from app.services.graph_executor import GraphExecutor
+        from app.db import async_session
+
+        panel_state_service = PanelStateService(event_bus=event_bus)
+        app.state.panel_state_service = panel_state_service
+
+        graph_executor = GraphExecutor(
+            hub_service=hub_service,
+            panel_state_service=panel_state_service,
+        )
+        app.state.graph_executor = graph_executor
+
+        async def _run_panel_graph(panel_id: int, node_id: str, value: any) -> None:
+            async with async_session() as db:
+                await graph_executor.run(panel_id, db)
+
+        panel_state_service.subscribe_global(
+            lambda p, n, v: asyncio.create_task(_run_panel_graph(p, n, v))
+        )
+
+        # Panel trigger service (APScheduler + EventBus integration)
+        from app.services.panel_trigger_service import PanelTriggerService
+
+        panel_trigger_service = PanelTriggerService(
+            scheduler=get_scheduler(),
+            graph_executor=graph_executor,
+            event_bus=event_bus,
+        )
+        app.state.panel_trigger_service = panel_trigger_service
+        async with async_session() as db:
+            await panel_trigger_service.load_all(db)
+
         # Bridge domain events to SSE
         for evt in (
             "hub_connected",
@@ -92,6 +131,7 @@ def create_app() -> FastAPI:
             "scenario_executed",
             "scenario_execution_failed",
             "scenario_skipped",
+            "panel_output",
         ):
             event_bus.subscribe(evt, lambda p, e=evt: _sse_bridge(e, p))
 
@@ -139,6 +179,9 @@ def create_app() -> FastAPI:
     app.include_router(devices, dependencies=[Depends(verify_api_key)])
     app.include_router(network, dependencies=[Depends(verify_api_key)])
     app.include_router(scenarios, dependencies=[Depends(verify_api_key)])
+    app.include_router(panels, dependencies=[Depends(verify_api_key)])
+    app.include_router(graphs, dependencies=[Depends(verify_api_key)])
+    app.include_router(node_registry, dependencies=[Depends(verify_api_key)])
 
     @app.get("/health")
     async def health(request: Request) -> dict:

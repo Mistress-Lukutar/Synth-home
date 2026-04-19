@@ -52,3 +52,24 @@ export const updateScenario = (id: number, payload: any) => api<any>(`/api/scena
 export const deleteScenario = (id: number) => api<any>(`/api/scenarios/${id}`, { method: 'DELETE' })
 export const triggerScenario = (id: number) => api<any>(`/api/scenarios/${id}/trigger`, { method: 'POST' })
 export const reorderScenarios = (items: { id: number; sort_order: number }[]) => api<any>('/api/scenarios/reorder', { method: 'PATCH', body: JSON.stringify(items) })
+
+// Panels
+export const listPanels = () => api<any[]>('/api/panels')
+export const createPanel = (payload: any) => api<any>('/api/panels', { method: 'POST', body: JSON.stringify(payload) })
+export const updatePanel = (id: number, payload: any) => api<any>(`/api/panels/${id}`, { method: 'PATCH', body: JSON.stringify(payload) })
+export const deletePanel = (id: number) => api<any>(`/api/panels/${id}`, { method: 'DELETE' })
+export const reorderPanels = (items: { id: number; sort_order: number }[]) => api<any>('/api/panels/reorder', { method: 'PATCH', body: JSON.stringify(items) })
+export const exportPanel = (id: number) => api<any>(`/api/panels/${id}/export`)
+
+// Graphs
+export const getGraph = (panelId: number) => api<any>(`/api/graphs/${panelId}`)
+export const saveGraph = (panelId: number, graph: any) => api<any>(`/api/graphs/${panelId}`, { method: 'PUT', body: JSON.stringify(graph) })
+export const validateGraph = (panelId: number, graph: any) => api<any>(`/api/graphs/${panelId}/validate`, { method: 'POST', body: JSON.stringify(graph) })
+
+// Node Registry
+export const getNodeRegistry = () => api<Record<string, any[]>>('/api/nodes/registry')
+
+// Panel runtime
+export const setPanelInput = (panelId: number, nodeId: string, value: any) =>
+  api<any>(`/api/panels/${panelId}/input`, { method: 'POST', body: JSON.stringify({ node_id: nodeId, value }) })
+export const getPanelState = (panelId: number) => api<any>(`/api/panels/${panelId}/state`)

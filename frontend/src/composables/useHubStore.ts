@@ -25,6 +25,16 @@ export interface Scenario {
   action_data?: any
 }
 
+export interface Panel {
+  id: number
+  name: string
+  is_enabled: boolean
+  sort_order: number
+  layout?: Record<string, any>
+  created_at?: string
+  updated_at?: string
+}
+
 export interface HubEvent {
   time: string
   text: string
@@ -41,6 +51,8 @@ interface State {
   currentPort: string | null
   devices: Device[]
   scenarios: Scenario[]
+  panels: Panel[]
+  panelOutputs: Record<number, Record<string, any>>
   events: HubEvent[]
   pendingCommands: Map<string, PendingCommand>
   sseReconnectDelay: number
@@ -54,6 +66,8 @@ const state = reactive<State>({
   currentPort: null,
   devices: [],
   scenarios: [],
+  panels: [],
+  panelOutputs: {},
   events: [],
   pendingCommands: new Map(),
   sseReconnectDelay: 1000,
@@ -104,6 +118,12 @@ function handleSSEMessage(msg: any) {
     logEvent(`❌ Scenario FAILED: ${msg.scenario_name} — ${msg.error}`)
   } else if (msg.type === 'scenario_skipped') {
     logEvent(`⏭️ Scenario skipped: ${msg.scenario_name} — ${msg.reason}`)
+  } else if (msg.type === 'panel_output') {
+    const { panel_id, node_id, value } = msg
+    if (!state.panelOutputs[panel_id]) {
+      state.panelOutputs[panel_id] = {}
+    }
+    state.panelOutputs[panel_id][node_id] = value
   }
 }
 
@@ -427,6 +447,28 @@ async function reorderScenarios(fromIndex: number, toIndex: number) {
   }
 }
 
+async function loadPanels() {
+  try {
+    state.panels = await api.listPanels()
+  } catch (e: any) {
+    logEvent('Load panels error: ' + e.message)
+  }
+}
+
+async function reorderPanels(fromIndex: number, toIndex: number) {
+  const list = [...state.panels]
+  const [moved] = list.splice(fromIndex, 1)
+  list.splice(toIndex, 0, moved)
+  list.forEach((p, i) => { p.sort_order = i })
+  state.panels = list
+  try {
+    await api.reorderPanels(list.map((p, i) => ({ id: p.id, sort_order: i })))
+  } catch (e: any) {
+    logEvent('Panels reorder failed: ' + e.message)
+    await loadPanels()
+  }
+}
+
 async function pollDevices() {
   if (!state.isConnected) return
   logEvent('Polling device attributes...')
@@ -482,6 +524,8 @@ export function useHubStore() {
     restoreConnection,
     loadScenarios,
     reorderScenarios,
+    loadPanels,
+    reorderPanels,
     pollDevices,
   }
 }
