@@ -76,6 +76,20 @@ class HubService:
         logger.info("read_attr_sent", ieee=ieee, endpoint=endpoint, cluster=cluster, attribute=attribute, correlation_id=result.get("correlation_id"))
         return result
 
+    async def read_attr_and_wait(
+        self,
+        ieee: str,
+        endpoint: Optional[int],
+        cluster: str,
+        attribute: str,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        if not self.is_connected():
+            raise HubConnectionError()
+        result = await self._client.read_attr_and_wait(ieee, endpoint, cluster, attribute, timeout)
+        logger.info("read_attr_wait_done", ieee=ieee, cluster=cluster, attribute=attribute, status=result.get("status"))
+        return result
+
     async def permit_join(self, duration: int) -> Dict[str, Any]:
         if not self.is_connected():
             raise HubConnectionError()

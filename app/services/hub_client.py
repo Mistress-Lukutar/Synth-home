@@ -130,6 +130,39 @@ class HubClient:
         await self.send_raw(payload)
         return {"correlation_id": correlation_id, "status": "pending"}
 
+    async def read_attr_and_wait(
+        self,
+        ieee: str,
+        endpoint: Optional[int],
+        cluster: str,
+        attribute: str,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        """Send a read_attr command and block until the ack arrives."""
+        import uuid
+
+        correlation_id = f"corr-{uuid.uuid4().hex[:12]}"
+        payload: Dict[str, Any] = {
+            "cmd": "read_attr",
+            "ieee": ieee,
+            "cluster": cluster,
+            "attribute": attribute,
+            "correlation_id": correlation_id,
+        }
+        if endpoint:
+            payload["endpoint"] = endpoint
+
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        self._protocol.register_future(correlation_id, fut)
+        try:
+            await self.send_raw(payload)
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            return {"correlation_id": correlation_id, "status": "timeout"}
+        finally:
+            self._protocol._resolve_future(correlation_id, {})
+
     async def permit_join(self, duration: int) -> Dict[str, Any]:
         """Open the Zigbee network for joining."""
         await self.send_raw({"cmd": "permit", "duration": duration})
