@@ -13,12 +13,13 @@ def sample_panel_with_graph(client):
     graph = {
         "nodes": [
             {"id": "sw1", "type": "panel_switch_input", "pos": {"x": 0, "y": 0}, "data": {"label": "Light Switch"}},
-            {"id": "dev1", "type": "device_picker", "pos": {"x": 200, "y": 0}, "data": {"ieee": "0x0011223344556677", "_device_name": "Test Bulb"}},
+            {"id": "dev1", "type": "device_picker", "pos": {"x": 200, "y": 0}, "data": {"ieee": "0x0011223344556677"}},
             {"id": "cmd1", "type": "device_set_on_off", "pos": {"x": 400, "y": 0}, "data": {}},
         ],
         "connections": [
-            {"id": "c1", "from": {"node": "sw1", "output": "value"}, "to": {"node": "cmd1", "input": "state"}},
-            {"id": "c2", "from": {"node": "dev1", "output": "device"}, "to": {"node": "cmd1", "input": "device"}},
+            {"id": "c1", "from": {"node": "sw1", "output": "changed"}, "to": {"node": "cmd1", "input": "trigger"}},
+            {"id": "c2", "from": {"node": "sw1", "output": "value"}, "to": {"node": "cmd1", "input": "state"}},
+            {"id": "c3", "from": {"node": "dev1", "output": "device"}, "to": {"node": "cmd1", "input": "device"}},
         ],
     }
     client.put(f"/api/graphs/{panel_id}", json=graph)
@@ -64,7 +65,8 @@ def test_primitive_const_bool_execution(client):
     client.put(f"/api/graphs/{panel_id}", json=graph)
     response = client.post(f"/api/panels/{panel_id}/input", json={"node_id": "b1", "value": True})
     assert response.status_code == 200
-    assert response.json()["execution"]["executed_nodes"] == 2
+    # const_bool has no trigger outputs, so only the triggered node itself executes
+    assert response.json()["execution"]["executed_nodes"] == 1
 
 
 def test_unknown_node_type_skipped_gracefully(client):

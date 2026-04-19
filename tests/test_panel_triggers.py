@@ -18,20 +18,20 @@ class TestFlowIfExecutor:
     async def test_true_branch(self):
         ex = FlowIfExecutor()
         node = GraphNode(id="n1", graph_id=1, type="flow_if", data={})
-        result = await ex.execute(None, node, {"condition": True})
+        result = await ex.execute(None, node, {"trigger": True, "condition": True})
         assert result == {"true": True, "false": False}
 
     async def test_false_branch(self):
         ex = FlowIfExecutor()
         node = GraphNode(id="n1", graph_id=1, type="flow_if", data={})
-        result = await ex.execute(None, node, {"condition": False})
+        result = await ex.execute(None, node, {"trigger": True, "condition": False})
         assert result == {"true": False, "false": True}
 
     async def test_default_false_when_missing(self):
         ex = FlowIfExecutor()
         node = GraphNode(id="n1", graph_id=1, type="flow_if", data={})
         result = await ex.execute(None, node, {})
-        assert result == {"true": False, "false": True}
+        assert result == {"true": False, "false": False}
 
 
 class TestFlowDelayExecutor:
