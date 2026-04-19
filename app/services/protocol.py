@@ -17,6 +17,7 @@ class ProtocolHandler:
         self._list_future: Optional[asyncio.Future[list]] = None
         self._on_message: Optional[Callable[[Dict[str, Any]], None]] = None
         self._fetch_lock = asyncio.Lock()
+        self._pending_futures: dict[str, asyncio.Future] = {}
 
     def set_on_message(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         self._on_message = callback
@@ -80,6 +81,9 @@ class ProtocolHandler:
                 raw_summary=str(data)[:300],
             )
 
+        if correlation_id:
+            self._resolve_future(correlation_id, data)
+
         if self._list_future is not None and not self._list_future.done():
             if evt == "device_list":
                 self._list_future.set_result(data.get("devices", []))
@@ -122,6 +126,18 @@ class ProtocolHandler:
             finally:
                 self._list_future = None
 
+    def register_future(self, correlation_id: str, future: asyncio.Future) -> None:
+        """Register a Future to be resolved when a message with the given correlation_id arrives."""
+        self._pending_futures[correlation_id] = future
+
+    def _resolve_future(self, correlation_id: str, data: dict) -> bool:
+        """Resolve a pending Future by correlation_id. Returns True if resolved."""
+        fut = self._pending_futures.pop(correlation_id, None)
+        if fut is not None and not fut.done():
+            fut.set_result(data)
+            return True
+        return False
+
     def reset(self) -> None:
         """Cancel any pending futures (e.g. on disconnect)."""
         if self._list_future is not None and not self._list_future.done():
@@ -130,4 +146,11 @@ class ProtocolHandler:
             except Exception:
                 pass
         self._list_future = None
+        for fut in list(self._pending_futures.values()):
+            if not fut.done():
+                try:
+                    fut.cancel()
+                except Exception:
+                    pass
+        self._pending_futures.clear()
         self._buffer = ""

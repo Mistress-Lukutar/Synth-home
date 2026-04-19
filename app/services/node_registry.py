@@ -141,6 +141,7 @@ def _build_builtin_catalogue() -> list[NodeTypeMeta]:
                 NodePortMeta(name="state", label="State", type="bool"),
             ],
             outputs=[
+                NodePortMeta(name="device", label="Device", type="device"),
                 NodePortMeta(name="ack", label="Ack", type="bool", optional=True),
             ],
             config_fields=[],
@@ -156,6 +157,7 @@ def _build_builtin_catalogue() -> list[NodeTypeMeta]:
                 NodePortMeta(name="color", label="Color", type="color"),
             ],
             outputs=[
+                NodePortMeta(name="device", label="Device", type="device"),
                 NodePortMeta(name="ack", label="Ack", type="bool", optional=True),
             ],
             config_fields=[
