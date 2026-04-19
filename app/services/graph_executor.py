@@ -148,6 +148,9 @@ class GraphExecutor:
                     val = await resolve_data(node_id, c.target_input)
                     node_inputs[c.target_input] = val
 
+            # Mark trigger input as active since this node was queued via trigger-flow
+            node_inputs["trigger"] = True
+
             try:
                 outputs = await executor.execute(ctx, node, node_inputs)
                 logger.debug("trigger_node_executed", node_id=node.id, type=node.type, outputs=outputs)
