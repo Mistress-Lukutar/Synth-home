@@ -22,12 +22,24 @@
       }"
     >
       <input
-        v-if="editingField.type === 'text' || editingField.type === 'device_select'"
+        v-if="editingField.type === 'text'"
         v-model="editingField.value"
         class="overlay-input"
         @blur="commitEditing"
         @keydown.enter="commitEditing"
       />
+      <select
+        v-else-if="editingField.type === 'device_select'"
+        v-model="editingField.value"
+        class="overlay-select"
+        @blur="commitEditing"
+        @change="commitEditing"
+      >
+        <option value="">— Select device —</option>
+        <option v-for="dev in devices" :key="dev.ieee" :value="dev.ieee">
+          {{ dev.name || dev.ieee }}
+        </option>
+      </select>
       <input
         v-else-if="editingField.type === 'number'"
         v-model.number="editingField.value"
