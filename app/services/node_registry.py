@@ -128,12 +128,6 @@ def _build_builtin_catalogue() -> list[NodeTypeMeta]:
                     type="device_select",
                     required=True,
                 ),
-                NodeConfigField(
-                    name="_device_name",
-                    label="Device Name (hint)",
-                    type="text",
-                    required=False,
-                ),
             ],
         ),
         NodeTypeMeta(
