@@ -33,6 +33,21 @@ def get_scenario_service(request: Request) -> ScenarioService:
     return request.app.state.scenario_service
 
 
+def get_panel_state_service(request: Request):
+    """Retrieve the PanelStateService from application state."""
+    return request.app.state.panel_state_service
+
+
+def get_graph_executor(request: Request):
+    """Retrieve the GraphExecutor from application state."""
+    return request.app.state.graph_executor
+
+
+def get_panel_trigger_service(request: Request):
+    """Retrieve the PanelTriggerService from application state."""
+    return request.app.state.panel_trigger_service
+
+
 def require_connection(service: Annotated[HubService, Depends(get_hub_service)]) -> HubService:
     """Dependency that raises HTTP 400 if the hub is not connected."""
     if not service.is_connected():

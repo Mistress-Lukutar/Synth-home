@@ -33,6 +33,7 @@ async def _drop_tables():
 
 @pytest.fixture
 def client():
-    """Yield a FastAPI TestClient."""
+    """Yield a FastAPI TestClient with lifespan support."""
     app = create_app()
-    return TestClient(app)
+    with TestClient(app) as c:
+        yield c

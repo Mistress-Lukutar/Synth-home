@@ -1,5 +1,24 @@
 <template>
   <div class="dashboard" :class="{ disabled: !store.state.isConnected }">
+    <!-- Panels -->
+    <div class="control-panel">
+      <div class="panel-header">
+        <h2 class="panel-title">Panels</h2>
+        <button class="btn btn-secondary btn-small" @click="createPanel">+ Add Panel</button>
+      </div>
+      <div class="panels-grid">
+        <div v-if="store.state.panels.length === 0" class="panels-empty">No panels yet</div>
+        <PanelCard
+          v-for="p in sortedPanels"
+          :key="p.id"
+          :panel="p"
+          @edit="onEditGraph"
+          @delete="onDeletePanel"
+          @update="onUpdatePanel"
+        />
+      </div>
+    </div>
+
     <!-- Devices -->
     <div class="control-panel">
       <div class="panel-header">
@@ -56,16 +75,31 @@
         </div>
       </div>
     </div>
+    <NodeEditor
+      v-if="editingPanel"
+      :panel-id="editingPanel.id"
+      :panel-name="editingPanel.name"
+      @close="closeEditor"
+      @saved="store.loadPanels"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
+import { computed, ref } from 'vue'
 import { useHubStore } from '../composables/useHubStore'
 import * as api from '../api'
 import DeviceCard from './DeviceCard.vue'
 import EventLog from './EventLog.vue'
+import PanelCard from './PanelCard.vue'
+import NodeEditor from './NodeEditor.vue'
 
 const store = useHubStore()
+const editingPanel = ref<{ id: number; name: string } | null>(null)
+
+const sortedPanels = computed(() => {
+  return [...store.state.panels].sort((a, b) => a.sort_order - b.sort_order || a.id - b.id)
+})
 
 async function onRefresh() {
   await store.refreshDevices()
@@ -79,6 +113,49 @@ async function doPermitJoin() {
     await api.permitJoin(180)
   } catch (e: any) {
     store.logEvent('Permit join error: ' + e.message)
+  }
+}
+
+async function createPanel() {
+  const name = prompt('Panel name:', 'New Panel')
+  if (!name) return
+  try {
+    await api.createPanel({ name, is_enabled: true, sort_order: store.state.panels.length })
+    await store.loadPanels()
+    store.logEvent(`Panel "${name}" created`)
+  } catch (e: any) {
+    store.logEvent('Create panel error: ' + e.message)
+  }
+}
+
+function onEditGraph(panelId: number) {
+  const panel = store.state.panels.find(p => p.id === panelId)
+  if (panel) {
+    editingPanel.value = { id: panel.id, name: panel.name }
+  }
+}
+
+function closeEditor() {
+  editingPanel.value = null
+}
+
+async function onDeletePanel(panelId: number) {
+  if (!confirm('Delete this panel?')) return
+  try {
+    await api.deletePanel(panelId)
+    await store.loadPanels()
+    store.logEvent(`Panel ${panelId} deleted`)
+  } catch (e: any) {
+    store.logEvent('Delete panel error: ' + e.message)
+  }
+}
+
+async function onUpdatePanel(panelId: number, data: any) {
+  try {
+    await api.updatePanel(panelId, data)
+    await store.loadPanels()
+  } catch (e: any) {
+    store.logEvent('Update panel error: ' + e.message)
   }
 }
 </script>
@@ -114,6 +191,20 @@ async function doPermitJoin() {
   text-transform: uppercase;
   letter-spacing: 1px;
   flex-shrink: 0;
+}
+
+/* Panels grid */
+.panels-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+.panels-empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: #666;
+  padding: 30px;
+  font-style: italic;
 }
 
 /* Devices grid — up to 4 columns */
@@ -182,6 +273,7 @@ async function doPermitJoin() {
   .system-info-row { grid-template-columns: 1fr; }
 }
 @media (max-width: 768px) {
+  .panels-grid { grid-template-columns: 1fr; }
   .device-cards-container { grid-template-columns: 1fr; }
   .info-grid { grid-template-columns: 1fr; }
 }

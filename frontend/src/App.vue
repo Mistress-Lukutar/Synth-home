@@ -26,8 +26,16 @@ import { ref, onMounted } from 'vue'
 import ConnectionPanel from './components/ConnectionPanel.vue'
 import DashboardPage from './components/DashboardPage.vue'
 import ScenariosPage from './components/ScenariosPage.vue'
+import { useHubStore } from './composables/useHubStore'
 
 const page = ref<'dashboard' | 'scenarios'>('dashboard')
+const store = useHubStore()
+
+onMounted(() => {
+  store.restoreConnection()
+  store.loadScenarios()
+  store.loadPanels()
+})
 </script>
 
 <style>
