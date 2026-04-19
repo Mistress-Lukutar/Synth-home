@@ -81,6 +81,37 @@ class TestTriggerDeviceEventExecutor:
         assert result["device"]["ieee"] == ""
 
 
+class TestReadExecutors:
+    async def test_read_on_off_no_device(self):
+        from app.services.node_executors.device import ReadOnOffExecutor
+        ex = ReadOnOffExecutor()
+        node = GraphNode(id="r1", graph_id=1, type="read_on_off", data={"endpoint": 1})
+        result = await ex.execute(None, node, {})
+        assert result == {"device": None, "on": False}
+
+    async def test_read_level_no_hub(self):
+        from app.services.node_executors.device import ReadLevelExecutor
+        ex = ReadLevelExecutor()
+        node = GraphNode(id="r1", graph_id=1, type="read_level", data={"endpoint": 1})
+        result = await ex.execute(None, node, {"device": {"ieee": "aa"}})
+        assert result == {"device": {"ieee": "aa"}, "level": 0}
+
+    async def test_read_color_with_mock_hub(self):
+        from app.services.node_executors.device import ReadColorExecutor
+        from app.services.node_executors.base import ExecutionContext
+        from unittest.mock import MagicMock
+
+        ex = ReadColorExecutor()
+        node = GraphNode(id="r1", graph_id=1, type="read_color", data={"endpoint": 1})
+        hub = MagicMock()
+        hub.get_cached_devices.return_value = [
+            {"ieee": "aa", "state": {"1": {"color": "#ff0000"}}}
+        ]
+        ctx = ExecutionContext(panel_id=1, graph_id=1, hub_service=hub, panel_state_service=None)
+        result = await ex.execute(ctx, node, {"device": {"ieee": "aa"}})
+        assert result == {"device": {"ieee": "aa"}, "color": "#ff0000"}
+
+
 class TestPanelTriggerService:
     async def test_register_and_unregister_schedule(self):
         scheduler = AsyncIOScheduler()

@@ -7,6 +7,25 @@ from app.services.node_executors.base import NodeExecutor, ExecutionContext, reg
 logger = structlog.get_logger(__name__)
 
 
+def _resolve_device_state(ctx: ExecutionContext | None, node, inputs: dict) -> dict:
+    """Helper to extract cached device state for read_* nodes."""
+    device = inputs.get("device")
+    if not device:
+        return {}
+    ieee = device.get("ieee") if isinstance(device, dict) else str(device)
+    endpoint = 1
+    if node.data:
+        try:
+            endpoint = int(node.data.get("endpoint", 1))
+        except (TypeError, ValueError):
+            endpoint = 1
+    if ctx is None or ctx.hub_service is None:
+        return {}
+    cached = ctx.hub_service.get_cached_devices()
+    dev = next((d for d in cached if d.get("ieee") == ieee), None)
+    return dev.get("state", {}).get(str(endpoint), {}) if dev else {}
+
+
 @register_executor
 class DevicePickerExecutor(NodeExecutor):
     node_type = "device_picker"
@@ -82,3 +101,37 @@ class DeviceSetColorExecutor(NodeExecutor):
         except Exception as exc:
             logger.warning("device_set_color_failed", ieee=ieee, error=str(exc))
             return {"ack": False, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# Read cached device state
+# ---------------------------------------------------------------------------
+
+@register_executor
+class ReadOnOffExecutor(NodeExecutor):
+    node_type = "read_on_off"
+
+    async def execute(self, ctx, node, inputs):
+        device = inputs.get("device")
+        state = _resolve_device_state(ctx, node, inputs)
+        return {"device": device, "on": bool(state.get("on", False))}
+
+
+@register_executor
+class ReadLevelExecutor(NodeExecutor):
+    node_type = "read_level"
+
+    async def execute(self, ctx, node, inputs):
+        device = inputs.get("device")
+        state = _resolve_device_state(ctx, node, inputs)
+        return {"device": device, "level": int(state.get("level", 0))}
+
+
+@register_executor
+class ReadColorExecutor(NodeExecutor):
+    node_type = "read_color"
+
+    async def execute(self, ctx, node, inputs):
+        device = inputs.get("device")
+        state = _resolve_device_state(ctx, node, inputs)
+        return {"device": device, "color": state.get("color", "#ffffff")}
