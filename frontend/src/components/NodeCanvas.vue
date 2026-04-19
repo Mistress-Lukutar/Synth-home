@@ -1,15 +1,69 @@
 <template>
-  <canvas
-    ref="canvasRef"
-    class="node-canvas"
-    @mousedown="onMouseDown"
-    @mousemove="onMouseMove"
-    @mouseup="onMouseUp"
-    @wheel.prevent="onWheel"
-    @contextmenu.prevent
-    tabindex="0"
-    @keydown="onKeyDown"
-  />
+  <div ref="wrapperRef" class="canvas-wrapper">
+    <canvas
+      ref="canvasRef"
+      class="node-canvas"
+      @mousedown="onMouseDown"
+      @mousemove="onMouseMove"
+      @mouseup="onMouseUp"
+      @wheel.prevent="onWheel"
+      @contextmenu.prevent
+      tabindex="0"
+      @keydown="onKeyDown"
+    />
+    <div
+      v-if="editingField"
+      class="field-overlay"
+      :style="{
+        left: editingField.screenX + 'px',
+        top: editingField.screenY + 'px',
+        width: editingField.width + 'px',
+        height: editingField.height + 'px',
+      }"
+    >
+      <input
+        v-if="editingField.type === 'text' || editingField.type === 'device_select'"
+        v-model="editingField.value"
+        class="overlay-input"
+        @blur="commitEditing"
+        @keydown.enter="commitEditing"
+      />
+      <input
+        v-else-if="editingField.type === 'number'"
+        v-model.number="editingField.value"
+        type="number"
+        class="overlay-input"
+        @blur="commitEditing"
+        @keydown.enter="commitEditing"
+      />
+      <input
+        v-else-if="editingField.type === 'checkbox'"
+        v-model="editingField.value"
+        type="checkbox"
+        class="overlay-checkbox"
+        @change="commitEditing"
+      />
+      <input
+        v-else-if="editingField.type === 'color'"
+        v-model="editingField.value"
+        type="color"
+        class="overlay-color"
+        @blur="commitEditing"
+        @change="commitEditing"
+      />
+      <select
+        v-else-if="editingField.type === 'select'"
+        v-model="editingField.value"
+        class="overlay-select"
+        @blur="commitEditing"
+        @change="commitEditing"
+      >
+        <option v-for="opt in editingField.options" :key="opt.value" :value="opt.value">
+          {{ opt.label }}
+        </option>
+      </select>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -42,11 +96,17 @@ interface Camera {
   zoom: number
 }
 
+interface DeviceInfo {
+  ieee: string
+  name?: string
+}
+
 const props = defineProps<{
   nodes: CanvasNode[]
   connections: CanvasConnection[]
   registry: Record<string, NodeTypeMeta[]>
   selectedNodeId?: string
+  devices?: DeviceInfo[]
 }>()
 
 const emit = defineEmits<{
@@ -54,12 +114,26 @@ const emit = defineEmits<{
   (e: 'updateConnections', connections: CanvasConnection[]): void
   (e: 'selectNode', id: string | null): void
   (e: 'addNode', type: string, pos: { x: number; y: number }): void
+  (e: 'updateNodeData', nodeId: string, data: Record<string, any>): void
 }>()
 
+const wrapperRef = ref<HTMLDivElement | null>(null)
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const ctxRef = ref<CanvasRenderingContext2D | null>(null)
 
 const camera = ref<Camera>({ x: 0, y: 0, zoom: 1 })
+
+const editingField = ref<{
+  nodeId: string
+  fieldName: string
+  type: string
+  value: any
+  options?: { value: string; label: string }[]
+  screenX: number
+  screenY: number
+  width: number
+  height: number
+} | null>(null)
 
 // Mouse interaction state
 const mouseState = ref<{
@@ -90,6 +164,8 @@ const HEADER_HEIGHT = 28
 const PORT_HEIGHT = 24
 const PORT_RADIUS = 6
 const NODE_PADDING = 8
+const CONFIG_FIELD_HEIGHT = 22
+const CONFIG_FIELD_PADDING = 6
 
 function getNodeMeta(type: string): NodeTypeMeta | undefined {
   for (const cat of Object.values(props.registry)) {
@@ -103,7 +179,9 @@ function getNodeHeight(node: CanvasNode): number {
   const inputCount = meta?.inputs?.length || 0
   const outputCount = meta?.outputs?.length || 0
   const bodyHeight = Math.max(inputCount, outputCount) * PORT_HEIGHT + NODE_PADDING * 2
-  return HEADER_HEIGHT + bodyHeight
+  const configCount = meta?.config_fields?.length || 0
+  const configHeight = configCount > 0 ? configCount * CONFIG_FIELD_HEIGHT + NODE_PADDING : 0
+  return HEADER_HEIGHT + bodyHeight + configHeight
 }
 
 function getCategoryColor(category: string): string {
@@ -210,6 +288,36 @@ function hitTestNode(worldX: number, worldY: number): CanvasNode | null {
       worldY <= node.pos.y + h
     ) {
       return node
+    }
+  }
+  return null
+}
+
+function hitTestConfigField(
+  worldX: number,
+  worldY: number,
+  node: CanvasNode,
+): { fieldName: string; fieldType: string; fieldMeta: any } | null {
+  const meta = getNodeMeta(node.type)
+  if (!meta || !meta.config_fields?.length) return null
+  const inputCount = meta.inputs?.length || 0
+  const outputCount = meta.outputs?.length || 0
+  const bodyHeight = Math.max(inputCount, outputCount) * PORT_HEIGHT + NODE_PADDING * 2
+  const configStartY = node.pos.y + HEADER_HEIGHT + bodyHeight + NODE_PADDING / 2
+
+  for (let i = 0; i < meta.config_fields.length; i++) {
+    const fy = configStartY + i * CONFIG_FIELD_HEIGHT
+    if (
+      worldX >= node.pos.x + CONFIG_FIELD_PADDING &&
+      worldX <= node.pos.x + NODE_WIDTH - CONFIG_FIELD_PADDING &&
+      worldY >= fy &&
+      worldY <= fy + CONFIG_FIELD_HEIGHT
+    ) {
+      return {
+        fieldName: meta.config_fields[i].name,
+        fieldType: meta.config_fields[i].type,
+        fieldMeta: meta.config_fields[i],
+      }
     }
   }
   return null
@@ -395,6 +503,64 @@ function drawNodes(ctx: CanvasRenderingContext2D) {
       ctx.textAlign = 'right'
       ctx.fillText(port.label, p.x - 10, p.y)
     }
+
+    // Config fields (inline properties)
+    if (meta.config_fields?.length) {
+      const inputCount = meta.inputs?.length || 0
+      const outputCount = meta.outputs?.length || 0
+      const bodyHeight = Math.max(inputCount, outputCount) * PORT_HEIGHT + NODE_PADDING * 2
+      const configStartY = node.pos.y + HEADER_HEIGHT + bodyHeight + NODE_PADDING / 2
+
+      for (let i = 0; i < meta.config_fields.length; i++) {
+        const field = meta.config_fields[i]
+        const fy = configStartY + i * CONFIG_FIELD_HEIGHT
+        const fx = node.pos.x + CONFIG_FIELD_PADDING
+        const fw = NODE_WIDTH - CONFIG_FIELD_PADDING * 2
+
+        // Background
+        ctx.fillStyle = 'rgba(255,255,255,0.03)'
+        ctx.fillRect(fx, fy, fw, CONFIG_FIELD_HEIGHT)
+
+        // Label
+        ctx.fillStyle = '#aaa'
+        ctx.font = '10px sans-serif'
+        ctx.textAlign = 'left'
+        ctx.textBaseline = 'middle'
+        ctx.fillText(field.label, fx + 4, fy + CONFIG_FIELD_HEIGHT / 2)
+
+        // Value
+        let value = node.data?.[field.name]
+        if (value === undefined || value === null) value = field.default
+
+        if (field.type === 'checkbox') {
+          const cbSize = 10
+          const cbX = node.pos.x + NODE_WIDTH - CONFIG_FIELD_PADDING - cbSize - 4
+          const cbY = fy + (CONFIG_FIELD_HEIGHT - cbSize) / 2
+          ctx.strokeStyle = '#888'
+          ctx.lineWidth = 1
+          ctx.strokeRect(cbX, cbY, cbSize, cbSize)
+          if (value) {
+            ctx.fillStyle = '#00ff88'
+            ctx.fillRect(cbX + 2, cbY + 2, cbSize - 4, cbSize - 4)
+          }
+        } else {
+          ctx.fillStyle = '#ddd'
+          ctx.font = '10px sans-serif'
+          ctx.textAlign = 'right'
+          let text = String(value ?? '')
+          if (field.type === 'device_select' && props.devices) {
+            const dev = props.devices.find((d) => d.ieee === text)
+            if (dev?.name) text = dev.name
+          }
+          // Truncate if too long
+          const maxTextWidth = fw - 60
+          if (ctx.measureText(text).width > maxTextWidth) {
+            text = text.substring(0, 12) + '…'
+          }
+          ctx.fillText(text, node.pos.x + NODE_WIDTH - CONFIG_FIELD_PADDING - 4, fy + CONFIG_FIELD_HEIGHT / 2)
+        }
+      }
+    }
   }
 }
 
@@ -462,9 +628,43 @@ function onMouseDown(e: MouseEvent) {
     }
   }
 
-  // Check node body
+  // Check node body (and inline config fields)
   const nodeHit = hitTestNode(world.x, world.y)
   if (nodeHit) {
+    const fieldHit = hitTestConfigField(world.x, world.y, nodeHit)
+    if (fieldHit) {
+      const meta = getNodeMeta(nodeHit.type)
+      const fieldDef = meta?.config_fields?.find((f: any) => f.name === fieldHit.fieldName)
+      const inputCount = meta?.inputs?.length || 0
+      const outputCount = meta?.outputs?.length || 0
+      const bodyHeight = Math.max(inputCount, outputCount) * PORT_HEIGHT + NODE_PADDING * 2
+      const fieldIndex = meta?.config_fields?.findIndex((f: any) => f.name === fieldHit.fieldName) ?? 0
+      const fieldY = nodeHit.pos.y + HEADER_HEIGHT + bodyHeight + NODE_PADDING / 2 + fieldIndex * CONFIG_FIELD_HEIGHT
+
+      const screenPos = worldToScreen(nodeHit.pos.x + CONFIG_FIELD_PADDING, fieldY)
+      const screenW = (NODE_WIDTH - CONFIG_FIELD_PADDING * 2) * camera.value.zoom
+      const screenH = CONFIG_FIELD_HEIGHT * camera.value.zoom
+
+      let value = nodeHit.data?.[fieldHit.fieldName]
+      if (value === undefined || value === null) value = fieldDef?.default
+
+      editingField.value = {
+        nodeId: nodeHit.id,
+        fieldName: fieldHit.fieldName,
+        type: fieldHit.fieldType,
+        value,
+        options: fieldDef?.options,
+        screenX: screenPos.x,
+        screenY: screenPos.y,
+        width: Math.max(screenW, 60),
+        height: Math.max(screenH, 20),
+      }
+
+      emit('selectNode', nodeHit.id)
+      render()
+      return
+    }
+
     state.mode = 'dragNode'
     state.dragNodeId = nodeHit.id
     state.dragNodeStart = { ...nodeHit.pos }
@@ -480,6 +680,7 @@ function onMouseDown(e: MouseEvent) {
 }
 
 function onMouseMove(e: MouseEvent) {
+  if (editingField.value) return
   const m = getMousePos(e)
   const state = mouseState.value
 
@@ -516,6 +717,7 @@ function onMouseMove(e: MouseEvent) {
 }
 
 function onMouseUp(e: MouseEvent) {
+  if (editingField.value) return
   const state = mouseState.value
   if (state.mode === 'idle') return
 
@@ -588,6 +790,14 @@ function _attachGlobalListeners() {
   window.addEventListener('mouseup', onWindowMouseUp)
 }
 
+function commitEditing() {
+  if (!editingField.value) return
+  const { nodeId, fieldName, value } = editingField.value
+  emit('updateNodeData', nodeId, { [fieldName]: value })
+  editingField.value = null
+  render()
+}
+
 function onWheel(e: WheelEvent) {
   const canvas = canvasRef.value!
   const rect = canvas.getBoundingClientRect()
@@ -647,6 +857,12 @@ watch(() => [props.nodes, props.connections, props.selectedNodeId], render, { de
 </script>
 
 <style scoped>
+.canvas-wrapper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
 .node-canvas {
   display: block;
   width: 100%;
@@ -656,5 +872,42 @@ watch(() => [props.nodes, props.connections, props.selectedNodeId], render, { de
 }
 .node-canvas:active {
   cursor: grabbing;
+}
+
+.field-overlay {
+  position: absolute;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+}
+
+.overlay-input,
+.overlay-select {
+  width: 100%;
+  height: 100%;
+  background: #2a2a2a;
+  border: 1px solid #00ff88;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 11px;
+  padding: 0 4px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.overlay-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: #00ff88;
+  cursor: pointer;
+}
+
+.overlay-color {
+  width: 100%;
+  height: 100%;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  background: transparent;
 }
 </style>

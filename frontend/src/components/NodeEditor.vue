@@ -17,28 +17,25 @@
             :connections="connections"
             :registry="registry"
             :selected-node-id="selectedNodeId"
+            :devices="store.state.devices"
             @update-nodes="onUpdateNodes"
             @update-connections="onUpdateConnections"
             @select-node="selectedNodeId = $event"
+            @update-node-data="onUpdateNodeData"
           />
         </div>
-        <NodeProperties
-          v-if="selectedNode"
-          :node="selectedNode"
-          :registry="registry"
-          @update="onUpdateNodeData"
-        />
+
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted } from 'vue'
 import NodePalette from './NodePalette.vue'
 import NodeCanvas from './NodeCanvas.vue'
-import NodeProperties from './NodeProperties.vue'
 import * as api from '../api'
+import { useHubStore } from '../composables/useHubStore'
 
 interface GraphNode {
   id: string
@@ -67,11 +64,7 @@ const registry = ref<Record<string, any[]>>({})
 const nodes = ref<GraphNode[]>([])
 const connections = ref<GraphConnection[]>([])
 const selectedNodeId = ref<string | null>(null)
-
-const selectedNode = computed(() => {
-  if (!selectedNodeId.value) return null
-  return nodes.value.find((n) => n.id === selectedNodeId.value) || null
-})
+const store = useHubStore()
 
 onMounted(async () => {
   try {
