@@ -132,14 +132,14 @@ const props = defineProps<{
   nodes: CanvasNode[]
   connections: CanvasConnection[]
   registry: Record<string, NodeTypeMeta[]>
-  selectedNodeId?: string
+  selectedNodeIds?: string[]
   devices?: DeviceInfo[]
 }>()
 
 const emit = defineEmits<{
   (e: 'updateNodes', nodes: CanvasNode[]): void
   (e: 'updateConnections', connections: CanvasConnection[]): void
-  (e: 'selectNode', id: string | null): void
+  (e: 'selectNodes', ids: string[]): void
   (e: 'addNode', type: string, pos: { x: number; y: number }): void
   (e: 'updateNodeData', nodeId: string, data: Record<string, any>): void
 }>()
@@ -187,7 +187,7 @@ const editingFieldStyle = computed(() => {
 
 // Mouse interaction state
 const mouseState = ref<{
-  mode: 'idle' | 'dragNode' | 'panCamera' | 'dragConnection'
+  mode: 'idle' | 'dragNode' | 'panCamera' | 'dragConnection' | 'selectBox'
   startX: number
   startY: number
   lastX: number
@@ -415,6 +415,21 @@ function render() {
   // Nodes
   drawNodes(ctx)
 
+  // Selection box
+  if (mouseState.value.mode === 'selectBox') {
+    const startWorld = screenToWorld(mouseState.value.startX, mouseState.value.startY)
+    const endWorld = screenToWorld(mouseState.value.lastX, mouseState.value.lastY)
+    const minX = Math.min(startWorld.x, endWorld.x)
+    const maxX = Math.max(startWorld.x, endWorld.x)
+    const minY = Math.min(startWorld.y, endWorld.y)
+    const maxY = Math.max(startWorld.y, endWorld.y)
+    ctx.fillStyle = 'rgba(0, 255, 136, 0.08)'
+    ctx.fillRect(minX, minY, maxX - minX, maxY - minY)
+    ctx.strokeStyle = 'rgba(0, 255, 136, 0.4)'
+    ctx.lineWidth = 1
+    ctx.strokeRect(minX, minY, maxX - minX, maxY - minY)
+  }
+
   ctx.restore()
 }
 
@@ -484,7 +499,7 @@ function drawNodes(ctx: CanvasRenderingContext2D) {
     if (!meta) continue
 
     const h = getNodeHeight(node)
-    const isSelected = node.id === props.selectedNodeId
+    const isSelected = props.selectedNodeIds?.includes(node.id) ?? false
 
     // Shadow
     ctx.shadowColor = isSelected ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.3)'
@@ -691,6 +706,21 @@ function getMousePos(e: MouseEvent): { x: number; y: number } {
 }
 
 function onMouseDown(e: MouseEvent) {
+  // Only left-click interacts with nodes/ports. Right-click or middle-click
+  // always starts camera pan.
+  if (e.button !== 0) {
+    e.preventDefault()
+    const m = getMousePos(e)
+    const state = mouseState.value
+    state.startX = m.x
+    state.startY = m.y
+    state.lastX = m.x
+    state.lastY = m.y
+    state.mode = 'panCamera'
+    _attachGlobalListeners()
+    return
+  }
+
   // Close any open editing field when clicking elsewhere on the canvas.
   // Clicks inside the overlay are stopped with @mousedown.stop.
   if (editingField.value) {
@@ -716,6 +746,21 @@ function onMouseDown(e: MouseEvent) {
       _attachGlobalListeners()
       render()
       return
+    } else {
+      // Drag from an input port: if a connection exists, remove it and start
+      // a new drag from the source output so the wire can be re-plugged.
+      const existing = props.connections.find(
+        (c) => c.to.node === portHit.nodeId && c.to.input === portHit.portName,
+      )
+      if (existing) {
+        const newConnections = props.connections.filter((c) => c !== existing)
+        emit('updateConnections', newConnections)
+        state.mode = 'dragConnection'
+        state.connectFrom = { nodeId: existing.from.node, output: existing.from.output }
+        _attachGlobalListeners()
+        render()
+        return
+      }
     }
   }
 
@@ -751,17 +796,31 @@ function onMouseDown(e: MouseEvent) {
       return
     }
 
+    // Multi-select handling
+    const currentSelection = props.selectedNodeIds || []
+    if (e.shiftKey) {
+      // Toggle selection
+      const newSelection = currentSelection.includes(nodeHit.id)
+        ? currentSelection.filter((id) => id !== nodeHit.id)
+        : [...currentSelection, nodeHit.id]
+      emit('selectNodes', newSelection)
+    } else if (!currentSelection.includes(nodeHit.id)) {
+      emit('selectNodes', [nodeHit.id])
+    }
+
     state.mode = 'dragNode'
     state.dragNodeId = nodeHit.id
     state.dragNodeStart = { ...nodeHit.pos }
-    emit('selectNode', nodeHit.id)
     _attachGlobalListeners()
     render()
     return
   }
 
-  // Empty space — pan camera
-  state.mode = 'panCamera'
+  // Empty space — start selection box (or deselect if plain click)
+  if (!e.shiftKey) {
+    emit('selectNodes', [])
+  }
+  state.mode = 'selectBox'
   _attachGlobalListeners()
 }
 
@@ -775,12 +834,23 @@ function onMouseMove(e: MouseEvent) {
     if (node && state.dragNodeStart) {
       const dx = (m.x - state.startX) / camera.value.zoom
       const dy = (m.y - state.startY) / camera.value.zoom
-      const newNodes = props.nodes.map((n) =>
-        n.id === state.dragNodeId
-          ? { ...n, pos: { x: state.dragNodeStart!.x + dx, y: state.dragNodeStart!.y + dy } }
-          : n,
-      )
+      const selection = props.selectedNodeIds || []
+      const isMultiDrag = selection.includes(state.dragNodeId) && selection.length > 1
+      const newNodes = props.nodes.map((n) => {
+        if (n.id === state.dragNodeId) {
+          return { ...n, pos: { x: state.dragNodeStart!.x + dx, y: state.dragNodeStart!.y + dy } }
+        }
+        if (isMultiDrag && selection.includes(n.id)) {
+          // Other selected nodes move by the same delta
+          return { ...n, pos: { x: n.pos.x + dx, y: n.pos.y + dy } }
+        }
+        return n
+      })
       emit('updateNodes', newNodes)
+      // Update dragNodeStart so subsequent moves use the new base
+      state.dragNodeStart = { x: node.pos.x, y: node.pos.y }
+      state.startX = m.x
+      state.startY = m.y
     }
   } else if (state.mode === 'panCamera') {
     camera.value.x += (m.x - state.lastX) / camera.value.zoom
@@ -795,6 +865,8 @@ function onMouseMove(e: MouseEvent) {
     } else {
       state.connectToPort = null
     }
+    render()
+  } else if (state.mode === 'selectBox') {
     render()
   }
 
@@ -834,22 +906,39 @@ function onMouseUp(e: MouseEvent) {
       emit('updateConnections', newConnections)
     }
   } else if (state.mode === 'dragNode') {
-    // Snap to grid or just finalize
-    const node = props.nodes.find((n) => n.id === state.dragNodeId)
-    if (node) {
-      const snapped = {
-        ...node,
-        pos: { x: Math.round(node.pos.x / 10) * 10, y: Math.round(node.pos.y / 10) * 10 },
+    // Snap all selected nodes to grid
+    const selection = props.selectedNodeIds || []
+    const newNodes = props.nodes.map((n) => {
+      if (selection.includes(n.id)) {
+        return { ...n, pos: { x: Math.round(n.pos.x / 10) * 10, y: Math.round(n.pos.y / 10) * 10 } }
       }
-      const newNodes = props.nodes.map((n) => (n.id === state.dragNodeId ? snapped : n))
-      emit('updateNodes', newNodes)
-    }
-  } else if (state.mode === 'idle') {
-    // Click on empty space — deselect
-    const world = screenToWorld(m.x, m.y)
-    if (!hitTestNode(world.x, world.y)) {
-      emit('selectNode', null)
-      render()
+      return n
+    })
+    emit('updateNodes', newNodes)
+  } else if (state.mode === 'selectBox') {
+    const startWorld = screenToWorld(state.startX, state.startY)
+    const endWorld = screenToWorld(m.x, m.y)
+    const minX = Math.min(startWorld.x, endWorld.x)
+    const maxX = Math.max(startWorld.x, endWorld.x)
+    const minY = Math.min(startWorld.y, endWorld.y)
+    const maxY = Math.max(startWorld.y, endWorld.y)
+    const boxSelected = props.nodes
+      .filter((n) => {
+        const h = getNodeHeight(n)
+        return n.pos.x + NODE_WIDTH >= minX && n.pos.x <= maxX && n.pos.y + h >= minY && n.pos.y <= maxY
+      })
+      .map((n) => n.id)
+    if (boxSelected.length > 0) {
+      if (e.shiftKey) {
+        const current = new Set(props.selectedNodeIds || [])
+        boxSelected.forEach((id) => {
+          if (current.has(id)) current.delete(id)
+          else current.add(id)
+        })
+        emit('selectNodes', Array.from(current))
+      } else {
+        emit('selectNodes', boxSelected)
+      }
     }
   }
 
@@ -904,14 +993,16 @@ function onWheel(e: WheelEvent) {
 
 function onKeyDown(e: KeyboardEvent) {
   if (e.key === 'Delete' || e.key === 'Backspace') {
-    if (props.selectedNodeId) {
-      const newNodes = props.nodes.filter((n) => n.id !== props.selectedNodeId)
+    const selection = props.selectedNodeIds || []
+    if (selection.length > 0) {
+      const toDelete = new Set(selection)
+      const newNodes = props.nodes.filter((n) => !toDelete.has(n.id))
       const newConnections = props.connections.filter(
-        (c) => c.from.node !== props.selectedNodeId && c.to.node !== props.selectedNodeId,
+        (c) => !toDelete.has(c.from.node) && !toDelete.has(c.to.node),
       )
       emit('updateNodes', newNodes)
       emit('updateConnections', newConnections)
-      emit('selectNode', null)
+      emit('selectNodes', [])
       render()
     }
   }
@@ -939,7 +1030,7 @@ onUnmounted(() => {
   window.removeEventListener('resize', resize)
 })
 
-watch(() => [props.nodes, props.connections, props.selectedNodeId], render, { deep: true })
+watch(() => [props.nodes, props.connections, props.selectedNodeIds], render, { deep: true })
 </script>
 
 <style scoped>
