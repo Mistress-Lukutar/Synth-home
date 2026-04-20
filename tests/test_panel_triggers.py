@@ -137,6 +137,24 @@ class TestDeviceActionExecutors:
         result = await ex.execute(None, node, {"trigger": True})
         assert result == {"device": None, "ack": False}
 
+    async def test_set_level_sends_level_param(self):
+        from app.services.node_executors.device import DeviceSetLevelExecutor
+        from unittest.mock import MagicMock, AsyncMock
+
+        ex = DeviceSetLevelExecutor()
+        node = GraphNode(id="l1", graph_id=1, type="device_set_level", data={"level": 200, "endpoint": 1})
+        hub = MagicMock()
+        hub.is_connected.return_value = True
+        hub.send_command = AsyncMock(return_value={"correlation_id": "x"})
+        ctx = MagicMock()
+        ctx.hub_service = hub
+        result = await ex.execute(ctx, node, {"trigger": True, "device": {"ieee": "aa"}})
+        assert result["ack"] is True
+        hub.send_command.assert_awaited_once()
+        call_args = hub.send_command.call_args
+        assert call_args[0][2]["level"] == 200
+        assert "value" not in call_args[0][2]
+
     async def test_set_ct_no_device(self):
         from app.services.node_executors.device import DeviceSetColorTemperatureExecutor
         ex = DeviceSetColorTemperatureExecutor()
