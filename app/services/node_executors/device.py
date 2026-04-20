@@ -3,6 +3,7 @@
 import structlog
 
 from app.services.node_executors.base import NodeExecutor, ExecutionContext, register_executor
+from app.services.commands import DeviceCommand
 
 logger = structlog.get_logger(__name__)
 
@@ -66,7 +67,7 @@ class DeviceSetOnOffExecutor(NodeExecutor):
         if ctx.hub_service is None or not ctx.hub_service.is_connected():
             logger.warning("device_set_on_off_no_hub", ieee=ieee)
             return {"device": device, "ack": False}
-        action = "on" if state else "off"
+        action = DeviceCommand.ON if state else DeviceCommand.OFF
         try:
             result = await ctx.hub_service.send_command(ieee, action)
             logger.info("device_set_on_off_executed", ieee=ieee, action=action)
@@ -109,7 +110,7 @@ class DeviceSetColorExecutor(NodeExecutor):
 
         params: dict = {"hex": color, "mode": "xy", "endpoint": endpoint}
         try:
-            result = await ctx.hub_service.send_command(ieee, "color", params)
+            result = await ctx.hub_service.send_command(ieee, DeviceCommand.COLOR, params)
             logger.info("device_set_color_executed", ieee=ieee, color=color, endpoint=endpoint)
             return {"device": device, "ack": True, "correlation_id": result.get("correlation_id")}
         except Exception as exc:
@@ -149,7 +150,7 @@ class DeviceSetLevelExecutor(NodeExecutor):
 
         try:
             result = await ctx.hub_service.send_command(
-                ieee, "level", {"level": int(level), "endpoint": endpoint}
+                ieee, DeviceCommand.LEVEL, {"level": int(level), "endpoint": endpoint}
             )
             logger.info("device_set_level_executed", ieee=ieee, level=level, endpoint=endpoint)
             return {"device": device, "ack": True, "correlation_id": result.get("correlation_id")}
@@ -190,7 +191,7 @@ class DeviceSetColorTemperatureExecutor(NodeExecutor):
 
         try:
             result = await ctx.hub_service.send_command(
-                ieee, "color", {"ct": int(ct), "endpoint": endpoint}
+                ieee, DeviceCommand.COLOR_CT, {"ct": int(ct), "endpoint": endpoint}
             )
             logger.info("device_set_ct_executed", ieee=ieee, ct=ct, endpoint=endpoint)
             return {"device": device, "ack": True, "correlation_id": result.get("correlation_id")}
