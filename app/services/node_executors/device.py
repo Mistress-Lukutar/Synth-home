@@ -149,7 +149,7 @@ class DeviceSetLevelExecutor(NodeExecutor):
 
         try:
             result = await ctx.hub_service.send_command(
-                ieee, "level", {"value": int(level), "endpoint": endpoint}
+                ieee, "level", {"level": int(level), "endpoint": endpoint}
             )
             logger.info("device_set_level_executed", ieee=ieee, level=level, endpoint=endpoint)
             return {"device": device, "ack": True, "correlation_id": result.get("correlation_id")}
