@@ -11,6 +11,7 @@ from app.repositories.device import DeviceRepository
 from app.services.hub_client import HubClient
 from app.services.protocol import ProtocolHandler
 from app.services.event_bus import EventBus
+from app.services.commands import DeviceCommand
 
 logger = structlog.get_logger(__name__)
 
@@ -266,23 +267,23 @@ class HubService:
                 if ep_key not in state:
                     state[ep_key] = {}
 
-                if action in ("on", "off", "toggle"):
+                if action in (DeviceCommand.ON, DeviceCommand.OFF, DeviceCommand.TOGGLE):
                     if ok is not None:
-                        if action == "on":
+                        if action == DeviceCommand.ON:
                             state[ep_key]["on"] = bool(ok)
-                        elif action == "off":
+                        elif action == DeviceCommand.OFF:
                             state[ep_key]["on"] = not bool(ok)
-                        elif action == "toggle":
+                        elif action == DeviceCommand.TOGGLE:
                             state[ep_key]["on"] = bool(ok)
-                elif action == "level":
+                elif action == DeviceCommand.LEVEL:
                     if value is not None:
                         state[ep_key]["level"] = int(value)
                     elif ok is not None:
                         state[ep_key]["level"] = state[ep_key].get("level", 128)
-                elif action == "color":
+                elif action == DeviceCommand.COLOR:
                     if value is not None:
                         state[ep_key]["color"] = value
-                elif action == "read_attr":
+                elif action == DeviceCommand.READ_ATTR:
                     cluster_id = data.get("cluster_id")
                     attr_id = data.get("attr_id")
                     val = data.get("value")
@@ -302,11 +303,11 @@ class HubService:
                 logger.info("ack_state_updated", ieee=ieee, action=action, ep=ep_key, ok=ok, value=value)
 
             # Update in-memory cache for graph executors
-            if action in ("on", "off", "toggle") and ok is not None:
-                self._update_cached_device_state(ieee, endpoint_id, {"on": bool(ok) if action in ("on", "toggle") else not bool(ok)})
-            elif action == "level" and value is not None:
+            if action in (DeviceCommand.ON, DeviceCommand.OFF, DeviceCommand.TOGGLE) and ok is not None:
+                self._update_cached_device_state(ieee, endpoint_id, {"on": bool(ok) if action in (DeviceCommand.ON, DeviceCommand.TOGGLE) else not bool(ok)})
+            elif action == DeviceCommand.LEVEL and value is not None:
                 self._update_cached_device_state(ieee, endpoint_id, {"level": int(value)})
-            elif action == "color" and value is not None:
+            elif action == DeviceCommand.COLOR and value is not None:
                 self._update_cached_device_state(ieee, endpoint_id, {"color": value})
         except Exception:
             logger.exception("ack_db_update_failed")

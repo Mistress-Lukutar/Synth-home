@@ -162,6 +162,25 @@ class TestDeviceActionExecutors:
         result = await ex.execute(None, node, {"trigger": True})
         assert result == {"device": None, "ack": False}
 
+    async def test_set_ct_sends_color_ct_action(self):
+        from app.services.node_executors.device import DeviceSetColorTemperatureExecutor
+        from app.services.commands import DeviceCommand
+        from unittest.mock import MagicMock, AsyncMock
+
+        ex = DeviceSetColorTemperatureExecutor()
+        node = GraphNode(id="ct1", graph_id=1, type="device_set_color_temperature", data={"ct": 300, "endpoint": 1})
+        hub = MagicMock()
+        hub.is_connected.return_value = True
+        hub.send_command = AsyncMock(return_value={"correlation_id": "x"})
+        ctx = MagicMock()
+        ctx.hub_service = hub
+        result = await ex.execute(ctx, node, {"trigger": True, "device": {"ieee": "aa"}})
+        assert result["ack"] is True
+        hub.send_command.assert_awaited_once()
+        call_args = hub.send_command.call_args
+        assert call_args[0][1] == DeviceCommand.COLOR_CT
+        assert call_args[0][2]["ct"] == 300
+
     async def test_color_temperature_picker_outputs_mireds(self):
         from app.services.node_executors.device import ColorTemperaturePickerExecutor
         ex = ColorTemperaturePickerExecutor()
