@@ -150,6 +150,12 @@ const ctxRef = ref<CanvasRenderingContext2D | null>(null)
 
 const camera = ref<Camera>({ x: 0, y: 0, zoom: 1 })
 
+// Clipboard for copy-paste
+const clipboard = ref<{
+  nodes: CanvasNode[]
+  connections: CanvasConnection[]
+} | null>(null)
+
 const editingField = ref<{
   nodeId: string
   fieldName: string
@@ -988,19 +994,63 @@ function onWheel(e: WheelEvent) {
 }
 
 function onKeyDown(e: KeyboardEvent) {
-  if (e.key === 'Delete' || e.key === 'Backspace') {
-    const selection = props.selectedNodeIds || []
-    if (selection.length > 0) {
-      const toDelete = new Set(selection)
-      const newNodes = props.nodes.filter((n) => !toDelete.has(n.id))
-      const newConnections = props.connections.filter(
-        (c) => !toDelete.has(c.from.node) && !toDelete.has(c.to.node),
-      )
-      emit('updateNodes', newNodes)
-      emit('updateConnections', newConnections)
-      emit('selectNodes', [])
-      render()
+  const selection = props.selectedNodeIds || []
+
+  if ((e.key === 'Delete' || e.key === 'Backspace') && selection.length > 0) {
+    const toDelete = new Set(selection)
+    const newNodes = props.nodes.filter((n) => !toDelete.has(n.id))
+    const newConnections = props.connections.filter(
+      (c) => !toDelete.has(c.from.node) && !toDelete.has(c.to.node),
+    )
+    emit('updateNodes', newNodes)
+    emit('updateConnections', newConnections)
+    emit('selectNodes', [])
+    render()
+    return
+  }
+
+  if (e.key === 'c' && (e.ctrlKey || e.metaKey) && selection.length > 0) {
+    e.preventDefault()
+    const selectedSet = new Set(selection)
+    const nodesToCopy = props.nodes.filter((n) => selectedSet.has(n.id))
+    const connsToCopy = props.connections.filter(
+      (c) => selectedSet.has(c.from.node) && selectedSet.has(c.to.node),
+    )
+    clipboard.value = {
+      nodes: nodesToCopy.map((n) => ({ ...n, data: { ...n.data } })),
+      connections: connsToCopy.map((c) => ({ ...c, from: { ...c.from }, to: { ...c.to } })),
     }
+    return
+  }
+
+  if (e.key === 'v' && (e.ctrlKey || e.metaKey) && clipboard.value) {
+    e.preventDefault()
+    const { nodes: srcNodes, connections: srcConns } = clipboard.value
+    const idMap: Record<string, string> = {}
+    const pastedNodes: CanvasNode[] = []
+    const now = Date.now()
+
+    for (const n of srcNodes) {
+      const newId = `n_${now}_${Math.floor(Math.random() * 100000)}`
+      idMap[n.id] = newId
+      pastedNodes.push({
+        ...n,
+        id: newId,
+        pos: { x: n.pos.x + 30, y: n.pos.y + 30 },
+      })
+    }
+
+    const pastedConns: CanvasConnection[] = srcConns.map((c) => ({
+      id: `c_${now}_${Math.floor(Math.random() * 100000)}`,
+      from: { node: idMap[c.from.node], output: c.from.output },
+      to: { node: idMap[c.to.node], input: c.to.input },
+    }))
+
+    emit('updateNodes', [...props.nodes, ...pastedNodes])
+    emit('updateConnections', [...props.connections, ...pastedConns])
+    emit('selectNodes', pastedNodes.map((n) => n.id))
+    render()
+    return
   }
 }
 
