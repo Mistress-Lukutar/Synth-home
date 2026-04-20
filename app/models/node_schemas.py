@@ -28,10 +28,14 @@ class NodeConfigField(BaseModel):
         "color",
         "textarea",
         "device_select",
+        "range",
     ] = "text"
     default: Any | None = None
     options: list[dict[str, Any]] | None = None
     required: bool = True
+    min: int | float | None = None
+    max: int | float | None = None
+    step: int | float | None = None
 
 
 class NodeTypeMeta(BaseModel):

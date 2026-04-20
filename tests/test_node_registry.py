@@ -30,6 +30,11 @@ def test_registry_includes_device_nodes(client):
     device_nodes = data.get("device", [])
     assert any(n["type"] == "device_picker" for n in device_nodes)
     assert any(n["type"] == "device_set_on_off" for n in device_nodes)
+    assert any(n["type"] == "device_set_color" for n in device_nodes)
+    assert any(n["type"] == "device_set_level" for n in device_nodes)
+    assert any(n["type"] == "device_set_color_temperature" for n in device_nodes)
+    primitives = data.get("primitive", [])
+    assert any(n["type"] == "color_temperature_picker" for n in primitives)
 
 
 def test_registry_includes_panel_nodes(client):

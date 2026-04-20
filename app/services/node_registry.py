@@ -162,21 +162,74 @@ def _build_builtin_catalogue() -> list[NodeTypeMeta]:
             ],
             config_fields=[
                 NodeConfigField(
-                    name="mode",
-                    label="Color Mode",
-                    type="select",
-                    default="xy",
-                    options=[
-                        {"value": "xy", "label": "XY"},
-                        {"value": "hs", "label": "HS"},
-                        {"value": "ct", "label": "CT"},
-                    ],
+                    name="color",
+                    label="Color",
+                    type="color",
+                    default="#ffffff",
                 ),
                 NodeConfigField(
                     name="endpoint",
                     label="Endpoint",
                     type="number",
                     default=1,
+                ),
+            ],
+        ),
+        NodeTypeMeta(
+            type="device_set_level",
+            category="device",
+            label="Set Level",
+            description="Set device brightness level (0-255).",
+            inputs=[
+                NodePortMeta(name="trigger", label="Trigger", type="trigger"),
+                NodePortMeta(name="device", label="Device", type="device"),
+                NodePortMeta(name="level", label="Level", type="int"),
+            ],
+            outputs=[
+                NodePortMeta(name="device", label="Device", type="device"),
+                NodePortMeta(name="ack", label="Ack", type="bool", optional=True),
+            ],
+            config_fields=[
+                NodeConfigField(name="level", label="Level", type="number", default=128),
+                NodeConfigField(name="endpoint", label="Endpoint", type="number", default=1),
+            ],
+        ),
+        NodeTypeMeta(
+            type="device_set_color_temperature",
+            category="device",
+            label="Set Color Temperature",
+            description="Set colour temperature in mireds.",
+            inputs=[
+                NodePortMeta(name="trigger", label="Trigger", type="trigger"),
+                NodePortMeta(name="device", label="Device", type="device"),
+                NodePortMeta(name="ct", label="CT (mireds)", type="int"),
+            ],
+            outputs=[
+                NodePortMeta(name="device", label="Device", type="device"),
+                NodePortMeta(name="ack", label="Ack", type="bool", optional=True),
+            ],
+            config_fields=[
+                NodeConfigField(name="ct", label="CT (mireds)", type="number", default=300),
+                NodeConfigField(name="endpoint", label="Endpoint", type="number", default=1),
+            ],
+        ),
+        NodeTypeMeta(
+            type="color_temperature_picker",
+            category="primitive",
+            label="Color Temperature",
+            description="Pick a colour temperature in Kelvin; outputs mireds.",
+            outputs=[
+                NodePortMeta(name="ct", label="CT (mireds)", type="int"),
+            ],
+            config_fields=[
+                NodeConfigField(
+                    name="kelvin",
+                    label="Kelvin",
+                    type="range",
+                    default=4000,
+                    min=2700,
+                    max=6500,
+                    step=100,
                 ),
             ],
         ),
@@ -394,12 +447,13 @@ def _build_builtin_catalogue() -> list[NodeTypeMeta]:
             type="trigger_schedule",
             category="trigger",
             label="Schedule",
-            description="Emit a trigger on a cron schedule.",
+            description="Emit a trigger at a specific time on selected days.",
             outputs=[
                 NodePortMeta(name="trigger", label="Trigger", type="trigger"),
             ],
             config_fields=[
-                NodeConfigField(name="cron", label="Cron", type="text", default="0 8 * * *"),
+                NodeConfigField(name="time", label="Time", type="text", default="08:00"),
+                NodeConfigField(name="days", label="Days", type="text", default="mon,tue,wed,thu,fri,sat,sun"),
             ],
         ),
         NodeTypeMeta(

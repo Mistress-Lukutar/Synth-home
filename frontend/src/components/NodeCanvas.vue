@@ -14,12 +14,8 @@
     <div
       v-if="editingField"
       class="field-overlay"
-      :style="{
-        left: editingField.screenX + 'px',
-        top: editingField.screenY + 'px',
-        width: editingField.width + 'px',
-        height: editingField.height + 'px',
-      }"
+      :style="editingFieldStyle"
+      @mousedown.stop
     >
       <input
         v-if="editingField.type === 'text'"
@@ -63,6 +59,25 @@
         @blur="commitEditing"
         @change="commitEditing"
       />
+      <input
+        v-else-if="editingField.type === 'time'"
+        v-model="editingField.value"
+        type="time"
+        class="overlay-input"
+        @blur="commitEditing"
+        @keydown.enter="commitEditing"
+      />
+      <input
+        v-else-if="editingField.type === 'range'"
+        v-model.number="editingField.value"
+        type="range"
+        :min="editingField.min"
+        :max="editingField.max"
+        :step="editingField.step"
+        class="overlay-range"
+        @blur="commitEditing"
+        @change="commitEditing"
+      />
       <select
         v-else-if="editingField.type === 'select'"
         v-model="editingField.value"
@@ -79,7 +94,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
 
 interface NodeTypeMeta {
   type: string
@@ -141,11 +156,34 @@ const editingField = ref<{
   type: string
   value: any
   options?: { value: string; label: string }[]
-  screenX: number
-  screenY: number
-  width: number
-  height: number
+  fieldIndex: number
+  min?: number
+  max?: number
+  step?: number
 } | null>(null)
+
+const editingFieldStyle = computed(() => {
+  if (!editingField.value) return {}
+  const node = props.nodes.find((n) => n.id === editingField.value!.nodeId)
+  if (!node) return {}
+  const meta = getNodeMeta(node.type)
+  const inputCount = meta?.inputs?.length || 0
+  const outputCount = meta?.outputs?.length || 0
+  const bodyHeight = Math.max(inputCount, outputCount) * PORT_HEIGHT + NODE_PADDING * 2
+  const fieldIndex = editingField.value.fieldIndex
+  const fieldY = node.pos.y + HEADER_HEIGHT + bodyHeight + NODE_PADDING / 2 + fieldIndex * CONFIG_FIELD_HEIGHT
+  const screenPos = worldToScreen(node.pos.x + CONFIG_FIELD_PADDING, fieldY)
+  const screenW = (NODE_WIDTH - CONFIG_FIELD_PADDING * 2) * camera.value.zoom
+  const screenH = CONFIG_FIELD_HEIGHT * camera.value.zoom
+  const fontSize = Math.max(10, 11 * camera.value.zoom)
+  return {
+    left: `${screenPos.x}px`,
+    top: `${screenPos.y}px`,
+    width: `${Math.max(screenW, 60)}px`,
+    height: `${Math.max(screenH, 20)}px`,
+    fontSize: `${fontSize}px`,
+  }
+})
 
 // Mouse interaction state
 const mouseState = ref<{
@@ -555,6 +593,41 @@ function drawNodes(ctx: CanvasRenderingContext2D) {
             ctx.fillStyle = '#00ff88'
             ctx.fillRect(cbX + 2, cbY + 2, cbSize - 4, cbSize - 4)
           }
+        } else if (field.type === 'range') {
+          const trackH = CONFIG_FIELD_HEIGHT - 6
+          const trackY = fy + 3
+          const min = field.min ?? 0
+          const max = field.max ?? 100
+          const numValue = Number(value ?? min)
+          const pct = Math.max(0, Math.min(1, (numValue - min) / (max - min)))
+
+          // Gradient background
+          const gradient = ctx.createLinearGradient(fx, trackY, fx + fw, trackY)
+          if (field.name === 'kelvin') {
+            gradient.addColorStop(0, '#ff9500')
+            gradient.addColorStop(1, '#a5c8ff')
+          } else {
+            gradient.addColorStop(0, '#444')
+            gradient.addColorStop(1, '#00ff88')
+          }
+          ctx.fillStyle = gradient
+          ctx.fillRect(fx, trackY, fw, trackH)
+
+          // Darken unfilled part
+          ctx.fillStyle = 'rgba(0,0,0,0.35)'
+          ctx.fillRect(fx + fw * pct, trackY, fw * (1 - pct), trackH)
+
+          // Border
+          ctx.strokeStyle = '#666'
+          ctx.lineWidth = 1
+          ctx.strokeRect(fx, trackY, fw, trackH)
+
+          // Text
+          ctx.fillStyle = '#fff'
+          ctx.font = 'bold 10px sans-serif'
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'middle'
+          ctx.fillText(String(numValue), fx + fw / 2, trackY + trackH / 2)
         } else {
           ctx.fillStyle = '#ddd'
           ctx.font = '10px sans-serif'
@@ -618,6 +691,12 @@ function getMousePos(e: MouseEvent): { x: number; y: number } {
 }
 
 function onMouseDown(e: MouseEvent) {
+  // Close any open editing field when clicking elsewhere on the canvas.
+  // Clicks inside the overlay are stopped with @mousedown.stop.
+  if (editingField.value) {
+    commitEditing()
+  }
+
   canvasRef.value?.focus()
   const m = getMousePos(e)
   const world = screenToWorld(m.x, m.y)
@@ -651,11 +730,6 @@ function onMouseDown(e: MouseEvent) {
       const outputCount = meta?.outputs?.length || 0
       const bodyHeight = Math.max(inputCount, outputCount) * PORT_HEIGHT + NODE_PADDING * 2
       const fieldIndex = meta?.config_fields?.findIndex((f: any) => f.name === fieldHit.fieldName) ?? 0
-      const fieldY = nodeHit.pos.y + HEADER_HEIGHT + bodyHeight + NODE_PADDING / 2 + fieldIndex * CONFIG_FIELD_HEIGHT
-
-      const screenPos = worldToScreen(nodeHit.pos.x + CONFIG_FIELD_PADDING, fieldY)
-      const screenW = (NODE_WIDTH - CONFIG_FIELD_PADDING * 2) * camera.value.zoom
-      const screenH = CONFIG_FIELD_HEIGHT * camera.value.zoom
 
       let value = nodeHit.data?.[fieldHit.fieldName]
       if (value === undefined || value === null) value = fieldDef?.default
@@ -666,10 +740,10 @@ function onMouseDown(e: MouseEvent) {
         type: fieldHit.fieldType,
         value,
         options: fieldDef?.options,
-        screenX: screenPos.x,
-        screenY: screenPos.y,
-        width: Math.max(screenW, 60),
-        height: Math.max(screenH, 20),
+        fieldIndex,
+        min: fieldDef?.min,
+        max: fieldDef?.max,
+        step: fieldDef?.step,
       }
 
       emit('selectNode', nodeHit.id)
@@ -901,10 +975,10 @@ watch(() => [props.nodes, props.connections, props.selectedNodeId], render, { de
   border: 1px solid #00ff88;
   border-radius: 4px;
   color: #fff;
-  font-size: 11px;
   padding: 0 4px;
   outline: none;
   box-sizing: border-box;
+  line-height: 1;
 }
 
 .overlay-checkbox {
@@ -921,5 +995,12 @@ watch(() => [props.nodes, props.connections, props.selectedNodeId], render, { de
   padding: 0;
   cursor: pointer;
   background: transparent;
+}
+
+.overlay-range {
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+  accent-color: #00ff88;
 }
 </style>
