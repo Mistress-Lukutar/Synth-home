@@ -16,11 +16,11 @@
             :nodes="nodes"
             :connections="connections"
             :registry="registry"
-            :selected-node-id="selectedNodeId"
+            :selected-node-ids="selectedNodeIds"
             :devices="store.state.devices"
             @update-nodes="onUpdateNodes"
             @update-connections="onUpdateConnections"
-            @select-node="selectedNodeId = $event"
+            @select-nodes="selectedNodeIds = $event"
             @update-node-data="onUpdateNodeData"
           />
         </div>
@@ -63,7 +63,7 @@ const emit = defineEmits<{
 const registry = ref<Record<string, any[]>>({})
 const nodes = ref<GraphNode[]>([])
 const connections = ref<GraphConnection[]>([])
-const selectedNodeId = ref<string | null>(null)
+const selectedNodeIds = ref<string[]>([])
 const store = useHubStore()
 
 onMounted(async () => {
