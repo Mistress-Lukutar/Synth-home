@@ -193,7 +193,7 @@ const mouseState = ref<{
   lastX: number
   lastY: number
   dragNodeId: string | null
-  dragNodeStart: { x: number; y: number } | null
+  dragNodeOrigins: Record<string, { x: number; y: number }> | null
   connectFrom: { nodeId: string; output: string } | null
   connectToPort: { nodeId: string; input: string } | null
 }>({
@@ -203,7 +203,7 @@ const mouseState = ref<{
   lastX: 0,
   lastY: 0,
   dragNodeId: null,
-  dragNodeStart: null,
+  dragNodeOrigins: null,
   connectFrom: null,
   connectToPort: null,
 })
@@ -810,7 +810,15 @@ function onMouseDown(e: MouseEvent) {
 
     state.mode = 'dragNode'
     state.dragNodeId = nodeHit.id
-    state.dragNodeStart = { ...nodeHit.pos }
+    const selection = props.selectedNodeIds || []
+    const idsToDrag = selection.includes(nodeHit.id) && selection.length > 1
+      ? selection
+      : [nodeHit.id]
+    state.dragNodeOrigins = {}
+    for (const id of idsToDrag) {
+      const n = props.nodes.find((nn) => nn.id === id)
+      if (n) state.dragNodeOrigins[id] = { ...n.pos }
+    }
     _attachGlobalListeners()
     render()
     return
@@ -829,29 +837,17 @@ function onMouseMove(e: MouseEvent) {
   const m = getMousePos(e)
   const state = mouseState.value
 
-  if (state.mode === 'dragNode' && state.dragNodeId) {
-    const node = props.nodes.find((n) => n.id === state.dragNodeId)
-    if (node && state.dragNodeStart) {
-      const dx = (m.x - state.startX) / camera.value.zoom
-      const dy = (m.y - state.startY) / camera.value.zoom
-      const selection = props.selectedNodeIds || []
-      const isMultiDrag = selection.includes(state.dragNodeId) && selection.length > 1
-      const newNodes = props.nodes.map((n) => {
-        if (n.id === state.dragNodeId) {
-          return { ...n, pos: { x: state.dragNodeStart!.x + dx, y: state.dragNodeStart!.y + dy } }
-        }
-        if (isMultiDrag && selection.includes(n.id)) {
-          // Other selected nodes move by the same delta
-          return { ...n, pos: { x: n.pos.x + dx, y: n.pos.y + dy } }
-        }
-        return n
-      })
-      emit('updateNodes', newNodes)
-      // Update dragNodeStart so subsequent moves use the new base
-      state.dragNodeStart = { x: node.pos.x, y: node.pos.y }
-      state.startX = m.x
-      state.startY = m.y
-    }
+  if (state.mode === 'dragNode' && state.dragNodeId && state.dragNodeOrigins) {
+    const dx = (m.x - state.startX) / camera.value.zoom
+    const dy = (m.y - state.startY) / camera.value.zoom
+    const newNodes = props.nodes.map((n) => {
+      const origin = state.dragNodeOrigins![n.id]
+      if (origin) {
+        return { ...n, pos: { x: origin.x + dx, y: origin.y + dy } }
+      }
+      return n
+    })
+    emit('updateNodes', newNodes)
   } else if (state.mode === 'panCamera') {
     camera.value.x += (m.x - state.lastX) / camera.value.zoom
     camera.value.y += (m.y - state.lastY) / camera.value.zoom
@@ -906,10 +902,10 @@ function onMouseUp(e: MouseEvent) {
       emit('updateConnections', newConnections)
     }
   } else if (state.mode === 'dragNode') {
-    // Snap all selected nodes to grid
-    const selection = props.selectedNodeIds || []
+    // Snap all dragged nodes to grid
+    const ids = state.dragNodeOrigins ? Object.keys(state.dragNodeOrigins) : []
     const newNodes = props.nodes.map((n) => {
-      if (selection.includes(n.id)) {
+      if (ids.includes(n.id)) {
         return { ...n, pos: { x: Math.round(n.pos.x / 10) * 10, y: Math.round(n.pos.y / 10) * 10 } }
       }
       return n
@@ -944,7 +940,7 @@ function onMouseUp(e: MouseEvent) {
 
   state.mode = 'idle'
   state.dragNodeId = null
-  state.dragNodeStart = null
+  state.dragNodeOrigins = null
   state.connectFrom = null
   state.connectToPort = null
   render()
