@@ -129,6 +129,20 @@ const filteredGroups = computed(() => {
   overflow-y: auto;
   padding: 8px;
 }
+.palette-content::-webkit-scrollbar {
+  width: 6px;
+}
+.palette-content::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
+}
+.palette-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+}
+.palette-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
 
 .palette-category {
   margin-bottom: 8px;
