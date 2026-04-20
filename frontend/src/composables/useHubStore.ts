@@ -516,6 +516,7 @@ export function useHubStore() {
   return {
     state: readonly(state),
     logEvent,
+    clearEvents: () => { state.events = [] },
     connect,
     disconnect,
     loadDevices,

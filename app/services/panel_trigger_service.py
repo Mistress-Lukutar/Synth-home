@@ -104,35 +104,75 @@ class PanelTriggerService:
                 pass
 
     def _register_schedule_trigger(self, panel_id: int, node: GraphNode) -> str | None:
-        cron_str = "0 8 * * *"
-        if node.data:
-            cron_str = node.data.get("cron", "0 8 * * *")
+        data = node.data or {}
 
-        try:
-            parts = cron_str.split()
-            if len(parts) != 5:
+        # Backward-compat: legacy graphs stored a raw cron string
+        cron_str = data.get("cron")
+        if cron_str:
+            try:
+                parts = cron_str.split()
+                if len(parts) == 5:
+                    trigger = CronTrigger(
+                        minute=parts[0],
+                        hour=parts[1],
+                        day=parts[2],
+                        month=parts[3],
+                        day_of_week=parts[4],
+                    )
+                else:
+                    logger.warning(
+                        "invalid_cron_expression",
+                        panel_id=panel_id,
+                        node_id=node.id,
+                        cron=cron_str,
+                    )
+                    return None
+            except Exception as exc:
                 logger.warning(
-                    "invalid_cron_expression",
+                    "cron_parse_failed",
                     panel_id=panel_id,
                     node_id=node.id,
-                    cron=cron_str,
+                    error=str(exc),
                 )
                 return None
-            trigger = CronTrigger(
-                minute=parts[0],
-                hour=parts[1],
-                day=parts[2],
-                month=parts[3],
-                day_of_week=parts[4],
-            )
-        except Exception as exc:
-            logger.warning(
-                "cron_parse_failed",
-                panel_id=panel_id,
-                node_id=node.id,
-                error=str(exc),
-            )
-            return None
+        else:
+            time_str = data.get("time", "08:00")
+            days_str = data.get("days", "mon,tue,wed,thu,fri,sat,sun")
+            try:
+                hour, minute = 8, 0
+                if time_str and ":" in time_str:
+                    h, m = time_str.split(":", 1)
+                    hour = int(h)
+                    minute = int(m)
+            except (ValueError, TypeError):
+                hour, minute = 8, 0
+
+            day_of_week = "*"
+            if days_str:
+                mapping = {
+                    "mon": "mon", "tue": "tue", "wed": "wed",
+                    "thu": "thu", "fri": "fri", "sat": "sat", "sun": "sun",
+                }
+                parts = [p.strip().lower() for p in str(days_str).split(",") if p.strip()]
+                valid = [mapping.get(p, p) for p in parts if mapping.get(p, p) in mapping.values()]
+                day_of_week = ",".join(valid) if valid else "*"
+
+            try:
+                trigger = CronTrigger(
+                    minute=minute,
+                    hour=hour,
+                    day="*",
+                    month="*",
+                    day_of_week=day_of_week,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "schedule_trigger_parse_failed",
+                    panel_id=panel_id,
+                    node_id=node.id,
+                    error=str(exc),
+                )
+                return None
 
         job_id = f"panel_trigger_{panel_id}_{node.id}"
 

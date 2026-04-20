@@ -102,14 +102,6 @@ def create_app() -> FastAPI:
         )
         app.state.graph_executor = graph_executor
 
-        async def _run_panel_graph(panel_id: int, node_id: str, value: any) -> None:
-            async with async_session() as db:
-                await graph_executor.run(panel_id, db, triggered_node_id=node_id)
-
-        panel_state_service.subscribe_global(
-            lambda p, n, v: _run_panel_graph(p, n, v)
-        )
-
         # Panel trigger service (APScheduler + EventBus integration)
         from app.services.panel_trigger_service import PanelTriggerService
 

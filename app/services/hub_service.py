@@ -192,6 +192,7 @@ class HubService:
                         device.online = False
                         logger.info("device_marked_offline", ieee=dev["ieee"])
             await session.commit()
+            self._devices = all_devices
 
     async def _handle_command_status(self, data: Dict[str, Any]) -> None:
         """Update device state in DB based on command_status events."""
@@ -232,6 +233,18 @@ class HubService:
                 await session.commit()
         except Exception:
             logger.exception("command_status_db_update_failed")
+
+    def _update_cached_device_state(self, ieee: str, endpoint_id, updates: dict) -> None:
+        """Update the in-memory device cache (used by graph executors)."""
+        for dev in self._devices:
+            if dev.get("ieee") == ieee:
+                if "state" not in dev:
+                    dev["state"] = {}
+                ep_key = str(endpoint_id or "1")
+                if ep_key not in dev["state"]:
+                    dev["state"][ep_key] = {}
+                dev["state"][ep_key].update(updates)
+                break
 
     async def _handle_ack(self, data: Dict[str, Any], evt: str) -> None:
         """Handle *_ack events (on_ack, off_ack, toggle_ack, level_ack, color_ack, etc.)."""
@@ -287,6 +300,14 @@ class HubService:
                 device.state = state
                 await session.commit()
                 logger.info("ack_state_updated", ieee=ieee, action=action, ep=ep_key, ok=ok, value=value)
+
+            # Update in-memory cache for graph executors
+            if action in ("on", "off", "toggle") and ok is not None:
+                self._update_cached_device_state(ieee, endpoint_id, {"on": bool(ok) if action in ("on", "toggle") else not bool(ok)})
+            elif action == "level" and value is not None:
+                self._update_cached_device_state(ieee, endpoint_id, {"level": int(value)})
+            elif action == "color" and value is not None:
+                self._update_cached_device_state(ieee, endpoint_id, {"color": value})
         except Exception:
             logger.exception("ack_db_update_failed")
 
@@ -329,28 +350,39 @@ class HubService:
                 ep_key = str(endpoint_id or "1")
                 if ep_key not in state:
                     state[ep_key] = {}
+                cached_updates = {}
                 if cluster_id == 6 and attr_id == 0:
                     state[ep_key]["on"] = bool(value)
+                    cached_updates["on"] = bool(value)
                 elif cluster_id == 8:
                     if attr_id == 0:
                         state[ep_key]["level"] = int(value)
+                        cached_updates["level"] = int(value)
                     elif attr_id == 2:
                         state[ep_key]["level_min"] = int(value)
+                        cached_updates["level_min"] = int(value)
                     elif attr_id == 3:
                         state[ep_key]["level_max"] = int(value)
+                        cached_updates["level_max"] = int(value)
                 elif cluster_id == 768:
                     if attr_id == 0:
                         state[ep_key]["hue"] = int(value)
+                        cached_updates["hue"] = int(value)
                     elif attr_id == 1:
                         state[ep_key]["sat"] = int(value)
+                        cached_updates["sat"] = int(value)
                     elif attr_id == 3:
                         state[ep_key]["x"] = int(value)
+                        cached_updates["x"] = int(value)
                     elif attr_id == 4:
                         state[ep_key]["y"] = int(value)
+                        cached_updates["y"] = int(value)
                     elif attr_id == 7:
                         state[ep_key]["ct"] = int(value)
+                        cached_updates["ct"] = int(value)
                     elif attr_id == 8:
                         state[ep_key]["color_mode"] = int(value)
+                        cached_updates["color_mode"] = int(value)
                     elif attr_id == 0x4002:
                         bitmask = int(value)
                         state[ep_key]["color_caps"] = {
@@ -359,15 +391,21 @@ class HubService:
                             "ct": bool(bitmask & 0x20),
                             "color_loop": bool(bitmask & 0x08),
                         }
+                        cached_updates["color_caps"] = state[ep_key]["color_caps"]
                     elif attr_id == 0x400B:
                         state[ep_key]["ct_min"] = int(value)
+                        cached_updates["ct_min"] = int(value)
                     elif attr_id == 0x400C:
                         state[ep_key]["ct_max"] = int(value)
+                        cached_updates["ct_max"] = int(value)
                     else:
                         state[ep_key]["color"] = value
+                        cached_updates["color"] = value
                 device.state = state
                 await session.commit()
                 logger.info("device_state_updated", ieee=ieee, ep=ep_key, cluster=cluster_id, attr=attr_id, value=value)
+            if cached_updates:
+                self._update_cached_device_state(ieee, endpoint_id, cached_updates)
         except Exception:
             logger.exception("device_state_update_failed")
 

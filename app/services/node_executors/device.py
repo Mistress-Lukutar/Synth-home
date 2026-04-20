@@ -86,7 +86,12 @@ class DeviceSetColorExecutor(NodeExecutor):
         color = inputs.get("color")
         if not triggered:
             return {"device": device, "ack": False}
-        if not device or not color:
+        if not device:
+            return {"device": device, "ack": False}
+        # Fallback to config color if wire not connected
+        if not color and node.data:
+            color = node.data.get("color", "#ffffff")
+        if not color:
             return {"device": device, "ack": False}
         ieee = device.get("ieee") if isinstance(device, dict) else device
         if not ieee:
@@ -95,23 +100,121 @@ class DeviceSetColorExecutor(NodeExecutor):
             logger.warning("device_set_color_no_hub", ieee=ieee)
             return {"device": device, "ack": False}
 
-        mode = "xy"
         endpoint = 1
         if node.data:
-            mode = node.data.get("mode", "xy")
             try:
                 endpoint = int(node.data.get("endpoint", 1))
             except (TypeError, ValueError):
                 endpoint = 1
 
-        params: dict = {"hex": color, "mode": mode, "endpoint": endpoint}
+        params: dict = {"hex": color, "mode": "xy", "endpoint": endpoint}
         try:
             result = await ctx.hub_service.send_command(ieee, "color", params)
-            logger.info("device_set_color_executed", ieee=ieee, color=color, mode=mode, endpoint=endpoint)
+            logger.info("device_set_color_executed", ieee=ieee, color=color, endpoint=endpoint)
             return {"device": device, "ack": True, "correlation_id": result.get("correlation_id")}
         except Exception as exc:
             logger.warning("device_set_color_failed", ieee=ieee, error=str(exc))
             return {"device": device, "ack": False, "error": str(exc)}
+
+
+@register_executor
+class DeviceSetLevelExecutor(NodeExecutor):
+    node_type = "device_set_level"
+
+    async def execute(self, ctx, node, inputs):
+        triggered = bool(inputs.get("trigger", False))
+        device = inputs.get("device")
+        level = inputs.get("level")
+        if not triggered:
+            return {"device": device, "ack": False}
+        if not device:
+            return {"device": device, "ack": False}
+        if level is None and node.data:
+            level = node.data.get("level", 128)
+        if level is None:
+            return {"device": device, "ack": False}
+        ieee = device.get("ieee") if isinstance(device, dict) else device
+        if not ieee:
+            return {"device": device, "ack": False}
+        if ctx.hub_service is None or not ctx.hub_service.is_connected():
+            logger.warning("device_set_level_no_hub", ieee=ieee)
+            return {"device": device, "ack": False}
+
+        endpoint = 1
+        if node.data:
+            try:
+                endpoint = int(node.data.get("endpoint", 1))
+            except (TypeError, ValueError):
+                endpoint = 1
+
+        try:
+            result = await ctx.hub_service.send_command(
+                ieee, "level", {"value": int(level), "endpoint": endpoint}
+            )
+            logger.info("device_set_level_executed", ieee=ieee, level=level, endpoint=endpoint)
+            return {"device": device, "ack": True, "correlation_id": result.get("correlation_id")}
+        except Exception as exc:
+            logger.warning("device_set_level_failed", ieee=ieee, error=str(exc))
+            return {"device": device, "ack": False, "error": str(exc)}
+
+
+@register_executor
+class DeviceSetColorTemperatureExecutor(NodeExecutor):
+    node_type = "device_set_color_temperature"
+
+    async def execute(self, ctx, node, inputs):
+        triggered = bool(inputs.get("trigger", False))
+        device = inputs.get("device")
+        ct = inputs.get("ct")
+        if not triggered:
+            return {"device": device, "ack": False}
+        if not device:
+            return {"device": device, "ack": False}
+        if ct is None and node.data:
+            ct = node.data.get("ct", 300)
+        if ct is None:
+            return {"device": device, "ack": False}
+        ieee = device.get("ieee") if isinstance(device, dict) else device
+        if not ieee:
+            return {"device": device, "ack": False}
+        if ctx.hub_service is None or not ctx.hub_service.is_connected():
+            logger.warning("device_set_ct_no_hub", ieee=ieee)
+            return {"device": device, "ack": False}
+
+        endpoint = 1
+        if node.data:
+            try:
+                endpoint = int(node.data.get("endpoint", 1))
+            except (TypeError, ValueError):
+                endpoint = 1
+
+        try:
+            result = await ctx.hub_service.send_command(
+                ieee, "color", {"ct": int(ct), "endpoint": endpoint}
+            )
+            logger.info("device_set_ct_executed", ieee=ieee, ct=ct, endpoint=endpoint)
+            return {"device": device, "ack": True, "correlation_id": result.get("correlation_id")}
+        except Exception as exc:
+            logger.warning("device_set_ct_failed", ieee=ieee, error=str(exc))
+            return {"device": device, "ack": False, "error": str(exc)}
+
+
+@register_executor
+class ColorTemperaturePickerExecutor(NodeExecutor):
+    node_type = "color_temperature_picker"
+
+    async def execute(self, ctx, node, inputs):
+        kelvin = 4000
+        if node.data:
+            try:
+                kelvin = int(node.data.get("kelvin", 4000))
+            except (TypeError, ValueError):
+                kelvin = 4000
+        # Clamp to valid range
+        kelvin = max(2700, min(6500, kelvin))
+        # Convert Kelvin to mireds
+        ct = int(1_000_000 / kelvin)
+        return {"ct": ct}
 
 
 # ---------------------------------------------------------------------------
