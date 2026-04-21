@@ -403,6 +403,62 @@ class HubService:
                         state[ep_key]["color"] = value
                         cached_updates["color"] = value
                 device.state = state
+
+                # Cache static attributes into endpoints JSON so the frontend
+                # can skip re-reading them on the next page load.
+                if cluster_id in (8, 768) and attr_id in (2, 3, 0x4002, 0x400B, 0x400C):
+                    from sqlalchemy.orm import attributes
+
+                    endpoints: list[dict] = list(device.endpoints or [])
+                    ep_found = False
+                    target_ep_id = endpoint_id or 1
+                    for ep in endpoints:
+                        if ep.get("id") == target_ep_id:
+                            if cluster_id == 8:
+                                if attr_id == 2:
+                                    ep["level_min"] = int(value)
+                                elif attr_id == 3:
+                                    ep["level_max"] = int(value)
+                            elif cluster_id == 768:
+                                if attr_id == 0x4002:
+                                    bitmask = int(value)
+                                    ep["color_caps"] = {
+                                        "hs": bool(bitmask & 0x01),
+                                        "xy": bool(bitmask & 0x10),
+                                        "ct": bool(bitmask & 0x20),
+                                        "color_loop": bool(bitmask & 0x08),
+                                    }
+                                elif attr_id == 0x400B:
+                                    ep["ct_min"] = int(value)
+                                elif attr_id == 0x400C:
+                                    ep["ct_max"] = int(value)
+                            ep_found = True
+                            break
+                    if not ep_found:
+                        new_ep: dict[str, Any] = {"id": target_ep_id}
+                        if cluster_id == 8:
+                            if attr_id == 2:
+                                new_ep["level_min"] = int(value)
+                            elif attr_id == 3:
+                                new_ep["level_max"] = int(value)
+                        elif cluster_id == 768:
+                            if attr_id == 0x4002:
+                                bitmask = int(value)
+                                new_ep["color_caps"] = {
+                                    "hs": bool(bitmask & 0x01),
+                                    "xy": bool(bitmask & 0x10),
+                                    "ct": bool(bitmask & 0x20),
+                                    "color_loop": bool(bitmask & 0x08),
+                                }
+                            elif attr_id == 0x400B:
+                                new_ep["ct_min"] = int(value)
+                            elif attr_id == 0x400C:
+                                new_ep["ct_max"] = int(value)
+                        endpoints.append(new_ep)
+                    device.endpoints = endpoints
+                    attributes.flag_modified(device, "endpoints")
+                    logger.info("endpoints_cache_updated", ieee=ieee, ep=target_ep_id, endpoints=endpoints)
+
                 await session.commit()
                 logger.info("device_state_updated", ieee=ieee, ep=ep_key, cluster=cluster_id, attr=attr_id, value=value)
             if cached_updates:

@@ -7,6 +7,7 @@ from sqlalchemy import delete
 
 from app.db import async_session
 from app.models.db_models import Device, DeviceAlias
+from app.services.event_bus import EventBus
 from app.services.hub_service import HubService
 
 
@@ -76,3 +77,29 @@ def test_rename_device(client):
     data = response.json()
     assert data["success"] is True
     assert data["name"] == "Living Room Lamp"
+
+
+@pytest.mark.asyncio
+async def test_update_device_state_caches_static_attrs_into_endpoints():
+    """Static read_attr values should be written into endpoints JSON for frontend caching."""
+    await _seed_device()
+    event_bus = EventBus()
+    hub = HubService(event_bus=event_bus)
+
+    await hub._update_device_state("00:11:22:33:44:55:66:77", 1, 8, 2, 10)
+    await hub._update_device_state("00:11:22:33:44:55:66:77", 1, 8, 3, 254)
+    await hub._update_device_state("00:11:22:33:44:55:66:77", 1, 768, 0x4002, 0x31)
+    await hub._update_device_state("00:11:22:33:44:55:66:77", 1, 768, 0x400B, 250)
+    await hub._update_device_state("00:11:22:33:44:55:66:77", 1, 768, 0x400C, 454)
+
+    async with async_session() as session:
+        from app.repositories.device import DeviceRepository
+        repo = DeviceRepository(session)
+        device = await repo.get_by_ieee("00:11:22:33:44:55:66:77")
+        assert device is not None
+        ep = device.endpoints[0]
+        assert ep["level_min"] == 10
+        assert ep["level_max"] == 254
+        assert ep["color_caps"] == {"hs": True, "xy": True, "ct": True, "color_loop": False}
+        assert ep["ct_min"] == 250
+        assert ep["ct_max"] == 454

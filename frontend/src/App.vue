@@ -25,7 +25,6 @@ import { useHubStore } from './composables/useHubStore'
 const store = useHubStore()
 
 onMounted(() => {
-  store.restoreConnection()
   store.loadPanels()
 })
 </script>
