@@ -426,6 +426,19 @@ async function reorderPanels(fromIndex: number, toIndex: number) {
   }
 }
 
+function _isStaticCached(ep: any, cluster: string, attribute: string): boolean {
+  if (cluster === '0x0008') {
+    if (attribute === '0x0002') return ep.level_min !== undefined
+    if (attribute === '0x0003') return ep.level_max !== undefined
+  }
+  if (cluster === '0x0300') {
+    if (attribute === '0x4002') return ep.color_caps !== undefined
+    if (attribute === '0x400B') return ep.ct_min !== undefined
+    if (attribute === '0x400C') return ep.ct_max !== undefined
+  }
+  return false
+}
+
 async function pollDevices() {
   if (!state.isConnected) return
   logEvent('Polling device attributes...')
@@ -441,19 +454,29 @@ async function pollDevices() {
       }
       if (clusters.includes(8)) {
         items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0008', attribute: '0x0000' })
-        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0008', attribute: '0x0002' })
-        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0008', attribute: '0x0003' })
+        if (!_isStaticCached(ep, '0x0008', '0x0002')) {
+          items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0008', attribute: '0x0002' })
+        }
+        if (!_isStaticCached(ep, '0x0008', '0x0003')) {
+          items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0008', attribute: '0x0003' })
+        }
       }
       if (clusters.includes(768)) {
-        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x4002' })
+        if (!_isStaticCached(ep, '0x0300', '0x4002')) {
+          items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x4002' })
+        }
         items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0008' })
         items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0000' })
         items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0001' })
         items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0003' })
         items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0004' })
         items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0007' })
-        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x400B' })
-        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x400C' })
+        if (!_isStaticCached(ep, '0x0300', '0x400B')) {
+          items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x400B' })
+        }
+        if (!_isStaticCached(ep, '0x0300', '0x400C')) {
+          items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x400C' })
+        }
       }
     }
     if (endpoints.length === 0) {
