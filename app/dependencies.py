@@ -10,7 +10,6 @@ from app.config import get_settings
 from app.db import async_session
 from app.services.event_bus import EventBus
 from app.services.hub_service import HubService
-from app.services.scenario_service import ScenarioService
 
 
 async def get_db() -> AsyncSession:
@@ -26,11 +25,6 @@ def get_event_bus(request: Request) -> EventBus:
 def get_hub_service(request: Request) -> HubService:
     """Retrieve the shared HubService from application state."""
     return request.app.state.hub_service
-
-
-def get_scenario_service(request: Request) -> ScenarioService:
-    """Retrieve the shared ScenarioService from application state."""
-    return request.app.state.scenario_service
 
 
 def get_panel_state_service(request: Request):

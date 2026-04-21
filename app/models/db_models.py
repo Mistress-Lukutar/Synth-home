@@ -33,20 +33,6 @@ class Device(Base):
     last_seen: Mapped[datetime] = mapped_column(default=utc_now, onupdate=utc_now)
 
 
-class Scenario(Base):
-    __tablename__ = "scenarios"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(128), nullable=False)
-    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    sort_order: Mapped[int] = mapped_column(default=0)
-    trigger_type: Mapped[str] = mapped_column(String(32), default="manual")
-    trigger_data: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-    actions: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
-
-    created_at: Mapped[datetime] = mapped_column(default=utc_now)
-
-
 class Panel(Base):
     """Customizable dashboard panel."""
 

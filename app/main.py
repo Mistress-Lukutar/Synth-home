@@ -17,14 +17,14 @@ from app.exceptions import setup_exception_handlers
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.logging import StructuredLoggingMiddleware
-from app.routers import connection, devices, network, scenarios, panels, graphs, node_registry
+from app.routers import connection, devices, network, panels, graphs, node_registry
 from app.services import sse_manager
 from app.services.event_bus import EventBus
 from app.services.hub_service import HubService
-from app.services.scenario_service import ScenarioService
+
 from app.db import engine
 from sqlalchemy import text
-from app.scheduler_engine import start_scheduler, stop_scheduler, load_scheduler_jobs, set_scenario_service, get_scheduler
+from app.scheduler_engine import start_scheduler, stop_scheduler, get_scheduler
 
 logger = structlog.get_logger(__name__)
 
@@ -73,15 +73,6 @@ def create_app() -> FastAPI:
         hub_service = HubService(event_bus=event_bus)
         app.state.hub_service = hub_service
 
-        # Scenario service
-        scenario_service = ScenarioService(
-            event_bus=event_bus,
-            hub_service=hub_service,
-            scheduler=get_scheduler(),
-        )
-        app.state.scenario_service = scenario_service
-        set_scenario_service(scenario_service)
-
         # Node registry (populated once at startup)
         from app.services.node_registry import create_node_registry
         node_registry = create_node_registry()
@@ -120,17 +111,12 @@ def create_app() -> FastAPI:
             "hub_disconnected",
             "hub_message",
             "hub_serial",
-            "scenario_triggered",
-            "scenario_executed",
-            "scenario_execution_failed",
-            "scenario_skipped",
             "panel_output",
         ):
             event_bus.subscribe(evt, lambda p, e=evt: _sse_bridge(e, p))
 
         # Scheduler
         start_scheduler()
-        await load_scheduler_jobs()
 
         # Auto-connect to configured port if set (inside Uvicorn loop)
         if settings_obj.auto_connect_port:
@@ -171,7 +157,6 @@ def create_app() -> FastAPI:
     app.include_router(connection, dependencies=[Depends(verify_api_key)])
     app.include_router(devices, dependencies=[Depends(verify_api_key)])
     app.include_router(network, dependencies=[Depends(verify_api_key)])
-    app.include_router(scenarios, dependencies=[Depends(verify_api_key)])
     app.include_router(panels, dependencies=[Depends(verify_api_key)])
     app.include_router(graphs, dependencies=[Depends(verify_api_key)])
     app.include_router(node_registry, dependencies=[Depends(verify_api_key)])

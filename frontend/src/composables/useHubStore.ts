@@ -14,17 +14,6 @@ export interface Device {
   online?: boolean
 }
 
-export interface Scenario {
-  id: number
-  name: string
-  is_enabled: boolean
-  sort_order: number
-  trigger_type: string
-  trigger_data?: any
-  action_type: string
-  action_data?: any
-}
-
 export interface Panel {
   id: number
   name: string
@@ -50,7 +39,6 @@ interface State {
   isConnected: boolean
   currentPort: string | null
   devices: Device[]
-  scenarios: Scenario[]
   panels: Panel[]
   panelOutputs: Record<number, Record<string, any>>
   events: HubEvent[]
@@ -65,7 +53,6 @@ const state = reactive<State>({
   isConnected: false,
   currentPort: null,
   devices: [],
-  scenarios: [],
   panels: [],
   panelOutputs: {},
   events: [],
@@ -110,14 +97,6 @@ function handleSSEMessage(msg: any) {
     if (evt === 'command_status') {
       handleCommandStatus(data)
     }
-  } else if (msg.type === 'scenario_triggered') {
-    logEvent(`⏰ Scenario triggered: ${msg.scenario_name} (id=${msg.scenario_id})`)
-  } else if (msg.type === 'scenario_executed') {
-    logEvent(`✅ Scenario executed: ${msg.scenario_name} (id=${msg.scenario_id})`)
-  } else if (msg.type === 'scenario_execution_failed') {
-    logEvent(`❌ Scenario FAILED: ${msg.scenario_name} — ${msg.error}`)
-  } else if (msg.type === 'scenario_skipped') {
-    logEvent(`⏭️ Scenario skipped: ${msg.scenario_name} — ${msg.reason}`)
   } else if (msg.type === 'panel_output') {
     const { panel_id, node_id, value } = msg
     if (!state.panelOutputs[panel_id]) {
@@ -425,28 +404,6 @@ async function restoreConnection() {
   }
 }
 
-async function loadScenarios() {
-  try {
-    state.scenarios = await api.listScenarios()
-  } catch (e: any) {
-    logEvent('Load scenarios error: ' + e.message)
-  }
-}
-
-async function reorderScenarios(fromIndex: number, toIndex: number) {
-  const list = [...state.scenarios]
-  const [moved] = list.splice(fromIndex, 1)
-  list.splice(toIndex, 0, moved)
-  list.forEach((s, i) => { s.sort_order = i })
-  state.scenarios = list
-  try {
-    await api.reorderScenarios(list.map((s, i) => ({ id: s.id, sort_order: i })))
-  } catch (e: any) {
-    logEvent('Reorder failed: ' + e.message)
-    await loadScenarios()
-  }
-}
-
 async function loadPanels() {
   try {
     state.panels = await api.listPanels()
@@ -523,8 +480,6 @@ export function useHubStore() {
     refreshDevices,
     refreshPorts,
     restoreConnection,
-    loadScenarios,
-    reorderScenarios,
     loadPanels,
     reorderPanels,
     pollDevices,
