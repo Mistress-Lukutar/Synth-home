@@ -46,12 +46,6 @@ export const readAttrBatch = (items: { ieee: string; endpoint?: number; cluster:
     body: JSON.stringify(items)
   })
 export const permitJoin = (duration: number) => api<any>('/api/network/permit-join', { method: 'POST', body: JSON.stringify({ duration }) })
-export const listScenarios = () => api<any[]>('/api/scenarios')
-export const createScenario = (payload: any) => api<any>('/api/scenarios', { method: 'POST', body: JSON.stringify(payload) })
-export const updateScenario = (id: number, payload: any) => api<any>(`/api/scenarios/${id}`, { method: 'PATCH', body: JSON.stringify(payload) })
-export const deleteScenario = (id: number) => api<any>(`/api/scenarios/${id}`, { method: 'DELETE' })
-export const triggerScenario = (id: number) => api<any>(`/api/scenarios/${id}/trigger`, { method: 'POST' })
-export const reorderScenarios = (items: { id: number; sort_order: number }[]) => api<any>('/api/scenarios/reorder', { method: 'PATCH', body: JSON.stringify(items) })
 
 // Panels
 export const listPanels = () => api<any[]>('/api/panels')
