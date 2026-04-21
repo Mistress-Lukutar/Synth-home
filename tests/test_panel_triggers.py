@@ -9,7 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.models.db_models import GraphNode
 from app.services.event_bus import EventBus
 from app.services.graph_executor import GraphExecutor
-from app.services.node_executors.logic import FlowIfExecutor, FlowDelayExecutor
+from app.services.node_executors.logic import FlowIfExecutor, FlowDelayExecutor, FlowOrExecutor
 from app.services.node_executors.trigger import TriggerScheduleExecutor, TriggerDeviceEventExecutor
 from app.services.panel_trigger_service import PanelTriggerService
 
@@ -55,6 +55,32 @@ class TestFlowDelayExecutor:
         node = GraphNode(id="n1", graph_id=1, type="flow_delay", data={"seconds": "bad"})
         result = await ex.execute(None, node, {"trigger": True})
         assert result == {"done": True}
+
+
+class TestFlowOrExecutor:
+    async def test_neither_trigger(self):
+        ex = FlowOrExecutor()
+        node = GraphNode(id="n1", graph_id=1, type="flow_or", data={})
+        result = await ex.execute(None, node, {"trigger_a": False, "trigger_b": False})
+        assert result == {"trigger": False}
+
+    async def test_a_only(self):
+        ex = FlowOrExecutor()
+        node = GraphNode(id="n1", graph_id=1, type="flow_or", data={})
+        result = await ex.execute(None, node, {"trigger_a": True, "trigger_b": False})
+        assert result == {"trigger": True}
+
+    async def test_b_only(self):
+        ex = FlowOrExecutor()
+        node = GraphNode(id="n1", graph_id=1, type="flow_or", data={})
+        result = await ex.execute(None, node, {"trigger_a": False, "trigger_b": True})
+        assert result == {"trigger": True}
+
+    async def test_both(self):
+        ex = FlowOrExecutor()
+        node = GraphNode(id="n1", graph_id=1, type="flow_or", data={})
+        result = await ex.execute(None, node, {"trigger_a": True, "trigger_b": True})
+        assert result == {"trigger": True}
 
 
 class TestTriggerScheduleExecutor:
@@ -248,6 +274,32 @@ class TestPanelTriggerService:
             )
             job_id = svc._register_schedule_trigger(42, node)
             assert job_id is not None
+        finally:
+            scheduler.shutdown()
+
+    async def test_schedule_job_is_async(self):
+        """Schedule job must be an async function so AsyncIOScheduler runs it in the event loop."""
+        scheduler = AsyncIOScheduler()
+        scheduler.start()
+        try:
+            graph_executor = MagicMock(spec=GraphExecutor)
+            graph_executor.run = AsyncMock()
+            event_bus = EventBus()
+
+            svc = PanelTriggerService(scheduler, graph_executor, event_bus)
+
+            node = GraphNode(
+                id="t1",
+                graph_id=1,
+                type="trigger_schedule",
+                data={"time": "14:30", "days": "mon,wed,fri"},
+            )
+            job_id = svc._register_schedule_trigger(42, node)
+            job = scheduler.get_job(job_id)
+            assert job is not None
+            import inspect
+
+            assert inspect.iscoroutinefunction(job.func)
         finally:
             scheduler.shutdown()
 

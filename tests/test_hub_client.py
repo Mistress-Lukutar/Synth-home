@@ -1,71 +1,69 @@
-"""Tests for the low-level HubClient."""
+"""Tests for the ProtocolHandler (core parsing and correlation logic)."""
 
 import asyncio
 import json
 
 import pytest
 
-from app.services.hub_client import HubClient
+from app.services.protocol import ProtocolHandler
 
 
 def test_set_on_message():
-    client = HubClient()
+    handler = ProtocolHandler()
     called_with = {}
 
-    def handler(data):
+    def cb(data):
         called_with["data"] = data
 
-    client.set_on_message(handler)
-    assert client._on_message is handler
+    handler.set_on_message(cb)
+    assert handler._on_message is cb
 
 
 @pytest.mark.asyncio
-async def test_fetch_devices_concurrent_piggyback():
-    """Ensure concurrent fetch_devices calls share a single future."""
-    client = HubClient()
-    # Simulate connected state without real serial port
-    client._fetch_lock = asyncio.Lock()
-    client._list_future = None
-
-    # We cannot easily test real serial I/O, but we can verify lock behaviour
-    assert client._fetch_lock.locked() is False
+async def test_request_device_list_concurrent_piggyback():
+    """Ensure concurrent request_device_list calls share a single future."""
+    handler = ProtocolHandler()
+    assert handler._fetch_lock.locked() is False
 
 
 @pytest.mark.asyncio
-async def test_handle_line_parses_json():
-    client = HubClient()
+async def test_dispatch_parses_json():
+    handler = ProtocolHandler()
     received = []
 
-    def handler(data):
+    def cb(data):
         received.append(data)
 
-    client.set_on_message(handler)
-    await client._handle_line(json.dumps({"evt": "device_joined", "ieee": "aa:bb"}))
+    handler.set_on_message(cb)
+    messages = handler.feed(json.dumps({"evt": "device_joined", "ieee": "aa:bb"}).encode() + b"\n")
+    handler.dispatch(messages)
     assert len(received) == 1
     assert received[0]["evt"] == "device_joined"
 
 
 @pytest.mark.asyncio
-async def test_handle_line_ignores_garbage():
-    client = HubClient()
+async def test_feed_ignores_garbage():
+    handler = ProtocolHandler()
     received = []
 
-    def handler(data):
+    def cb(data):
         received.append(data)
 
-    client.set_on_message(handler)
-    await client._handle_line("not json at all")
+    handler.set_on_message(cb)
+    messages = handler.feed(b"not json at all\n")
+    handler.dispatch(messages)
     assert len(received) == 0
 
 
 @pytest.mark.asyncio
-async def test_handle_line_resolves_list_future():
-    client = HubClient()
+async def test_dispatch_resolves_list_future():
+    handler = ProtocolHandler()
     loop = asyncio.get_running_loop()
-    client._list_future = loop.create_future()
+    handler._list_future = loop.create_future()
 
-    await client._handle_line(
-        json.dumps({"evt": "device_list", "devices": [{"ieee_addr": "01"}]})
+    messages = handler.feed(
+        json.dumps({"evt": "device_list", "devices": [{"ieee_addr": "01"}]}).encode() + b"\n"
     )
+    handler.dispatch(messages)
 
-    assert client._list_future is None  # future was consumed
+    assert handler._list_future is None  # future was consumed

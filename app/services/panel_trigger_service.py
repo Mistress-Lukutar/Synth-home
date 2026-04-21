@@ -180,12 +180,9 @@ class PanelTriggerService:
             async with async_session() as session:
                 await self._graph_executor.run(panel_id, session, triggered_node_id=node.id)
 
-        def _wrapper() -> None:
-            asyncio.create_task(_run())
-
         try:
             self._scheduler.add_job(
-                _wrapper,
+                _run,
                 trigger=trigger,
                 id=job_id,
                 replace_existing=True,
