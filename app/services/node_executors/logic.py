@@ -42,3 +42,13 @@ class FlowDelayExecutor(NodeExecutor):
                 return {"done": False}
 
         return {"done": triggered}
+
+
+@register_executor
+class FlowOrExecutor(NodeExecutor):
+    node_type = "flow_or"
+
+    async def execute(self, ctx: ExecutionContext, node, inputs):
+        a = bool(inputs.get("trigger_a", False))
+        b = bool(inputs.get("trigger_b", False))
+        return {"trigger": a or b}

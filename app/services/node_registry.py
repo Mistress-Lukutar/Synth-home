@@ -442,6 +442,20 @@ def _build_builtin_catalogue() -> list[NodeTypeMeta]:
                 NodeConfigField(name="seconds", label="Seconds", type="number", default=1),
             ],
         ),
+        NodeTypeMeta(
+            type="flow_or",
+            category="logic",
+            label="OR",
+            description="Emit a trigger when either input trigger fires.",
+            inputs=[
+                NodePortMeta(name="trigger_a", label="Trigger A", type="trigger"),
+                NodePortMeta(name="trigger_b", label="Trigger B", type="trigger"),
+            ],
+            outputs=[
+                NodePortMeta(name="trigger", label="Trigger", type="trigger"),
+            ],
+            config_fields=[],
+        ),
         # --- Triggers ------------------------------------------------------
         NodeTypeMeta(
             type="trigger_schedule",
