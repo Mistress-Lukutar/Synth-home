@@ -163,6 +163,16 @@ class HubClient:
         finally:
             self._protocol._resolve_future(correlation_id, {})
 
+    async def ping(self, ieee: str, correlation_id: str) -> Dict[str, Any]:
+        """Send a liveness ping to a Zigbee device."""
+        payload: Dict[str, Any] = {
+            "cmd": "ping",
+            "ieee": ieee,
+            "correlation_id": correlation_id,
+        }
+        await self.send_raw(payload)
+        return {"correlation_id": correlation_id, "status": "pending"}
+
     async def permit_join(self, duration: int) -> Dict[str, Any]:
         """Open the Zigbee network for joining."""
         await self.send_raw({"cmd": "permit", "duration": duration})

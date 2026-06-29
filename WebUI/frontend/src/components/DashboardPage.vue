@@ -8,14 +8,24 @@
       </div>
       <div class="panels-grid">
         <div v-if="store.state.panels.length === 0" class="panels-empty">No panels yet</div>
-        <PanelCard
-          v-for="p in sortedPanels"
+        <div
+          v-for="(p, index) in sortedPanels"
           :key="p.id"
-          :panel="p"
-          @edit="onEditGraph"
-          @delete="onDeletePanel"
-          @update="onUpdatePanel"
-        />
+          class="panel-card-wrapper"
+          :class="{ 'drag-over': dragOverIndex === index }"
+          draggable="true"
+          @dragstart="onDragStart($event, index)"
+          @dragover.prevent="onDragOver($event, index)"
+          @drop="onDrop($event, index)"
+          @dragend="onDragEnd"
+        >
+          <PanelCard
+            :panel="p"
+            @edit="onEditGraph"
+            @delete="onDeletePanel"
+            @update="onUpdatePanel"
+          />
+        </div>
       </div>
     </div>
 
@@ -96,10 +106,39 @@ import NodeEditor from './NodeEditor.vue'
 
 const store = useHubStore()
 const editingPanel = ref<{ id: number; name: string } | null>(null)
+const dragIndex = ref<number | null>(null)
+const dragOverIndex = ref<number | null>(null)
 
 const sortedPanels = computed(() => {
   return [...store.state.panels].sort((a, b) => a.sort_order - b.sort_order || a.id - b.id)
 })
+
+function onDragStart(e: DragEvent, index: number) {
+  dragIndex.value = index
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(index))
+  }
+}
+
+function onDragOver(e: DragEvent, index: number) {
+  dragOverIndex.value = index
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = 'move'
+  }
+}
+
+async function onDrop(e: DragEvent, index: number) {
+  if (dragIndex.value === null || dragIndex.value === index) return
+  await store.reorderPanels(dragIndex.value, index)
+  dragIndex.value = null
+  dragOverIndex.value = null
+}
+
+function onDragEnd() {
+  dragIndex.value = null
+  dragOverIndex.value = null
+}
 
 async function onRefresh() {
   await store.refreshDevices()
@@ -205,6 +244,17 @@ async function onUpdatePanel(panelId: number, data: any) {
   color: #666;
   padding: 30px;
   font-style: italic;
+}
+
+.panel-card-wrapper {
+  cursor: grab;
+}
+.panel-card-wrapper:active {
+  cursor: grabbing;
+}
+.panel-card-wrapper.drag-over :deep(.panel-card) {
+  border: 1px dashed rgba(0, 255, 136, 0.5);
+  background: rgba(0, 255, 136, 0.05);
 }
 
 /* Devices grid — up to 4 columns */

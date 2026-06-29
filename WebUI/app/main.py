@@ -22,8 +22,9 @@ from app.services import sse_manager
 from app.services.event_bus import EventBus
 from app.services.hub_service import HubService
 
-from app.db import engine
-from sqlalchemy import text
+from app.db import engine, async_session
+from sqlalchemy import select, text
+from app.models.db_models import SystemSetting
 from app.scheduler_engine import start_scheduler, stop_scheduler, get_scheduler
 
 logger = structlog.get_logger(__name__)
@@ -118,12 +119,23 @@ def create_app() -> FastAPI:
         # Scheduler
         start_scheduler()
 
+        async def _get_last_port() -> str | None:
+            async with async_session() as db:
+                result = await db.execute(
+                    select(SystemSetting).where(SystemSetting.key == "last_connected_port")
+                )
+                setting = result.scalar_one_or_none()
+                return setting.value if setting else None
+
         # Auto-connect to configured port if set (inside Uvicorn loop)
-        if settings_obj.auto_connect_port:
-            logger.info("auto_connecting_to_configured_port", port=settings_obj.auto_connect_port)
+        port_to_connect = settings_obj.auto_connect_port
+        if not port_to_connect:
+            port_to_connect = await _get_last_port()
+        if port_to_connect:
+            logger.info("auto_connecting_to_port", port=port_to_connect)
             try:
-                await hub_service.connect(settings_obj.auto_connect_port)
-                logger.info("auto_connect_successful", port=settings_obj.auto_connect_port)
+                await hub_service.connect(port_to_connect)
+                logger.info("auto_connect_successful", port=port_to_connect)
             except Exception as e:
                 logger.warning("auto_connect_failed", error=str(e))
 

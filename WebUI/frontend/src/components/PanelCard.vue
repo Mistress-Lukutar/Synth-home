@@ -1,15 +1,25 @@
 <template>
-  <div class="panel-card" :class="{ disabled: !panel.is_enabled }">
+  <div class="panel-card" :class="{ disabled: !panel.is_enabled, collapsed: isCollapsed }">
     <div class="panel-card-header">
-      <input
-        v-if="editingName"
-        v-model="nameEdit"
-        class="panel-name-input"
-        @blur="finishRename"
-        @keyup.enter="finishRename"
-        ref="nameInput"
-      />
-      <h3 v-else class="panel-name" @click="startRename">{{ panel.name }}</h3>
+      <div class="panel-header-left">
+        <span
+          v-if="hasControls"
+          class="collapse-toggle"
+          @click.stop="toggleCollapse"
+        >
+          {{ isCollapsed ? '▶' : '▼' }}
+        </span>
+        <span v-else class="collapse-toggle-placeholder"></span>
+        <input
+          v-if="editingName"
+          v-model="nameEdit"
+          class="panel-name-input"
+          @blur="finishRename"
+          @keyup.enter="finishRename"
+          ref="nameInput"
+        />
+        <h3 v-else class="panel-name" @click="startRename">{{ panel.name }}</h3>
+      </div>
       <div class="panel-actions">
         <button class="btn-icon" title="Toggle enabled" @click="toggleEnabled">
           {{ panel.is_enabled ? '●' : '○' }}
@@ -18,54 +28,57 @@
         <button class="btn-icon" title="Delete" @click="$emit('delete', panel.id)">×</button>
       </div>
     </div>
-    <div v-if="loading" class="panel-loading">Loading…</div>
-    <div v-else class="panel-controls">
-      <template v-for="node in uiInputNodes" :key="node.id">
-        <div class="control-row" v-if="node.type === 'panel_switch_input'">
-          <span class="control-label">{{ node.data.label || 'Switch' }}</span>
-          <label class="switch">
+    <div v-if="!isCollapsed" class="panel-body">
+      <div v-if="loading" class="panel-loading">Loading…</div>
+      <div v-else class="panel-controls">
+        <template v-for="node in uiInputNodes" :key="node.id">
+          <div class="control-row" v-if="node.type === 'panel_switch_input'">
+            <span class="control-label">{{ node.data.label || 'Switch' }}</span>
+            <label class="switch">
+              <input
+                type="checkbox"
+                :checked="inputValues[node.id] || false"
+                @change="e => onInputChange(node.id, (e.target as HTMLInputElement).checked)"
+              />
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="control-row" v-else-if="node.type === 'panel_int_input'">
+            <span class="control-label">{{ node.data.label || 'Value' }}</span>
             <input
-              type="checkbox"
-              :checked="inputValues[node.id] || false"
-              @change="e => onInputChange(node.id, (e.target as HTMLInputElement).checked)"
+              type="range"
+              class="control-slider"
+              :min="node.data.min ?? 0"
+              :max="node.data.max ?? 255"
+              :value="inputValues[node.id] ?? 0"
+              @input="e => onInputChange(node.id, parseInt((e.target as HTMLInputElement).value))"
             />
-            <span class="slider"></span>
-          </label>
+            <span class="control-value">{{ inputValues[node.id] ?? 0 }}</span>
+          </div>
+          <div class="control-row" v-else-if="node.type === 'panel_button_input'">
+            <button
+              class="btn btn-small"
+              :style="getButtonStyle(node)"
+              @click="onInputChange(node.id, true)"
+            >
+              {{ node.data.label || 'Button' }}
+            </button>
+          </div>
+        </template>
+        <template v-for="node in uiOutputNodes" :key="node.id">
+          <div class="control-row output" v-if="node.type === 'panel_int_output'">
+            <span class="control-label">{{ node.data.label || 'Value' }}</span>
+            <span class="output-value">{{ outputValues[node.id] ?? '-' }}</span>
+          </div>
+          <div class="control-row output" v-else-if="node.type === 'panel_text_output'">
+            <span class="control-label">{{ node.data.label || 'Status' }}</span>
+            <span class="output-value">{{ outputValues[node.id] ?? '-' }}</span>
+          </div>
+        </template>
+        <div v-if="uiInputNodes.length === 0 && uiOutputNodes.length === 0" class="panel-placeholder">
+          <span class="placeholder-icon">◈</span>
+          <span class="placeholder-text">No UI nodes in graph</span>
         </div>
-        <div class="control-row" v-else-if="node.type === 'panel_int_input'">
-          <span class="control-label">{{ node.data.label || 'Value' }}</span>
-          <input
-            type="range"
-            class="control-slider"
-            :min="node.data.min ?? 0"
-            :max="node.data.max ?? 255"
-            :value="inputValues[node.id] ?? 0"
-            @input="e => onInputChange(node.id, parseInt((e.target as HTMLInputElement).value))"
-          />
-          <span class="control-value">{{ inputValues[node.id] ?? 0 }}</span>
-        </div>
-        <div class="control-row" v-else-if="node.type === 'panel_button_input'">
-          <button
-            class="btn btn-primary btn-small"
-            @click="onInputChange(node.id, true)"
-          >
-            {{ node.data.label || 'Button' }}
-          </button>
-        </div>
-      </template>
-      <template v-for="node in uiOutputNodes" :key="node.id">
-        <div class="control-row output" v-if="node.type === 'panel_int_output'">
-          <span class="control-label">{{ node.data.label || 'Value' }}</span>
-          <span class="output-value">{{ outputValues[node.id] ?? '-' }}</span>
-        </div>
-        <div class="control-row output" v-else-if="node.type === 'panel_text_output'">
-          <span class="control-label">{{ node.data.label || 'Status' }}</span>
-          <span class="output-value">{{ outputValues[node.id] ?? '-' }}</span>
-        </div>
-      </template>
-      <div v-if="uiInputNodes.length === 0 && uiOutputNodes.length === 0" class="panel-placeholder">
-        <span class="placeholder-icon">◈</span>
-        <span class="placeholder-text">No UI nodes in graph</span>
       </div>
     </div>
   </div>
@@ -121,6 +134,13 @@ const uiOutputNodes = computed(() =>
   graphNodes.value.filter(n => ['panel_int_output', 'panel_text_output'].includes(n.type))
 )
 
+const hasControls = computed(() => uiInputNodes.value.length > 0 || uiOutputNodes.value.length > 0)
+
+const isCollapsed = computed(() => {
+  if (!hasControls.value) return true
+  return props.panel.collapsed
+})
+
 onMounted(async () => {
   try {
     const graph = await api.getGraph(props.panel.id)
@@ -160,6 +180,38 @@ function finishRename() {
 function toggleEnabled() {
   emit('update', props.panel.id, { is_enabled: !props.panel.is_enabled })
 }
+
+function toggleCollapse() {
+  if (!hasControls.value) return
+  emit('update', props.panel.id, { collapsed: !props.panel.collapsed })
+}
+
+function getButtonStyle(node: GraphNode) {
+  const color = node.data?.color || 'primary'
+  const map: Record<string, string> = {
+    primary: '#00ff88',
+    secondary: '#888888',
+    danger: '#ff4444',
+    warning: '#ffaa00',
+    info: '#00ccff',
+  }
+  const textMap: Record<string, string> = {
+    primary: '#000',
+    secondary: '#fff',
+    danger: '#000',
+    warning: '#000',
+    info: '#000',
+  }
+  if (color === 'custom') {
+    const bg = node.data?.custom_color || '#00ff88'
+    return { backgroundColor: bg, color: '#000', width: '100%' }
+  }
+  return {
+    backgroundColor: map[color] || '#00ff88',
+    color: textMap[color] || '#000',
+    width: '100%',
+  }
+}
 </script>
 
 <style scoped>
@@ -168,11 +220,15 @@ function toggleEnabled() {
   border-radius: 12px;
   padding: 16px;
   backdrop-filter: blur(10px);
-  transition: opacity 0.3s;
+  transition: opacity 0.3s, min-height 0.2s;
   display: flex;
   flex-direction: column;
   gap: 12px;
   min-height: 120px;
+}
+.panel-card.collapsed {
+  min-height: 0;
+  gap: 0;
 }
 .panel-card.disabled {
   opacity: 0.5;
@@ -183,6 +239,30 @@ function toggleEnabled() {
   justify-content: space-between;
   align-items: center;
   gap: 8px;
+}
+
+.panel-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.collapse-toggle {
+  color: #888;
+  cursor: pointer;
+  font-size: 0.75rem;
+  width: 16px;
+  text-align: center;
+  user-select: none;
+  transition: color 0.2s;
+}
+.collapse-toggle:hover {
+  color: #fff;
+}
+.collapse-toggle-placeholder {
+  width: 16px;
 }
 
 .panel-name {
@@ -241,6 +321,11 @@ function toggleEnabled() {
   color: #666;
   font-size: 0.85rem;
   padding: 20px;
+}
+
+.panel-body {
+  display: flex;
+  flex-direction: column;
 }
 
 .panel-controls {
@@ -343,14 +428,6 @@ input:checked + .slider:before {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   transition: all 0.2s;
-}
-.btn-primary {
-  background: #00ff88;
-  color: #000;
-  width: 100%;
-}
-.btn-primary:hover {
-  background: #00dd77;
 }
 .btn-small {
   padding: 5px 10px;

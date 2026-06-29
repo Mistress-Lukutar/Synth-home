@@ -338,6 +338,21 @@ def _build_builtin_catalogue() -> list[NodeTypeMeta]:
             ],
             config_fields=[
                 NodeConfigField(name="label", label="Label", type="text", default="Button"),
+                NodeConfigField(
+                    name="color",
+                    label="Color",
+                    type="select",
+                    default="primary",
+                    options=[
+                        {"value": "primary", "label": "Primary"},
+                        {"value": "secondary", "label": "Secondary"},
+                        {"value": "danger", "label": "Danger"},
+                        {"value": "warning", "label": "Warning"},
+                        {"value": "info", "label": "Info"},
+                        {"value": "custom", "label": "Custom"},
+                    ],
+                ),
+                NodeConfigField(name="custom_color", label="Custom Color", type="color", default="#00ff88"),
             ],
         ),
         NodeTypeMeta(

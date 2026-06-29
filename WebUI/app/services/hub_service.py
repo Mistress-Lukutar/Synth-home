@@ -1,6 +1,7 @@
 """Business-logic service wrapper around HubClient."""
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
 import structlog
@@ -14,6 +15,9 @@ from app.services.event_bus import EventBus
 from app.services.commands import DeviceCommand
 
 logger = structlog.get_logger(__name__)
+
+PING_INTERVAL_SECONDS = 30
+PING_TIMEOUT_SECONDS = 3.0
 
 
 class HubService:
@@ -32,6 +36,8 @@ class HubService:
         self._client.set_on_message(self._on_hub_message)
         self._devices: List[Dict[str, Any]] = []
         self._bg_tasks: set[asyncio.Task] = set()
+        self._ping_task: Optional[asyncio.Task] = None
+        self._stop_ping = asyncio.Event()
 
     def is_connected(self) -> bool:
         return self._client.is_connected()
@@ -47,6 +53,7 @@ class HubService:
             logger.info("hub_connected", port=port)
             await self._event_bus.publish("hub_connected", {"port": port})
             self._spawn_background(self.fetch_devices())
+            self._start_ping_loop()
         else:
             logger.warning("hub_connect_failed", port=port)
         return ok
@@ -55,8 +62,10 @@ class HubService:
         """Disconnect from the hub and cancel background tasks."""
         if self.is_connected():
             logger.info("disconnecting_from_hub")
+        self._stop_ping_loop()
         await self._cancel_background_tasks()
         await self._client.disconnect()
+        await self._mark_all_devices_offline()
         await self._event_bus.publish("hub_disconnected", {})
 
     async def send_command(
@@ -125,7 +134,8 @@ class HubService:
                         "name": d.get("name") or "Zigbee Device",
                         "network_addr": d.get("network_addr"),
                         "endpoints": ep_list,
-                        "online": True,
+                        "online": d.get("online", True),
+                        "last_seen_ms": d.get("last_seen_ms"),
                     }
                 )
                 logger.info(
@@ -134,6 +144,7 @@ class HubService:
                     name=d.get("name"),
                     endpoint_count=len(ep_list),
                     endpoints=ep_list,
+                    online=d.get("online", True),
                     raw_device_keys=list(d.keys()),
                 )
             self._devices = mapped
@@ -142,14 +153,27 @@ class HubService:
         if evt == "command_status":
             self._spawn_background(self._handle_command_status(data))
 
+        if evt == "ping_result":
+            self._spawn_background(self._handle_ping_result(data))
+
         if evt and evt.endswith("_ack"):
             self._spawn_background(self._handle_ack(data, evt))
 
         if evt == "state_change":
+            ieee = data.get("ieee_addr")
+            if ieee:
+                self._spawn_background(self._set_device_online(ieee, True))
             self._spawn_background(self._handle_state_change(data))
 
         # Publish domain events for downstream consumers (scheduler, SSE, etc.)
-        if evt in ("device_joined", "device_left", "state_change", "command_failed", "command_status"):
+        if evt in (
+            "device_joined",
+            "device_left",
+            "state_change",
+            "command_failed",
+            "command_status",
+            "ping_result",
+        ):
             self._spawn_background(
                 self._event_bus.publish("device_event", {"event": evt, "data": data})
             )
@@ -171,19 +195,26 @@ class HubService:
                     continue
                 seen_ieees.add(ieee)
                 endpoints = d.get("endpoints", [])
+                online = d.get("online", True)
+                last_seen_ms = d.get("last_seen_ms")
                 logger.info(
                     "device_upsert_db",
                     ieee=ieee,
                     network_addr=d.get("network_addr"),
                     endpoint_count=len(endpoints),
                     endpoints=endpoints,
+                    online=online,
                 )
-                await repo.upsert(
-                    ieee,
-                    network_addr=d.get("network_addr"),
-                    endpoints=endpoints,
-                    online=True,
-                )
+                upsert_kwargs: Dict[str, Any] = {
+                    "network_addr": d.get("network_addr"),
+                    "endpoints": endpoints,
+                    "online": online,
+                }
+                if last_seen_ms:
+                    upsert_kwargs["last_seen"] = datetime.fromtimestamp(
+                        last_seen_ms / 1000.0, tz=timezone.utc
+                    )
+                await repo.upsert(ieee, **upsert_kwargs)
             # Mark missing devices as offline
             all_devices = await repo.list_with_aliases()
             for dev in all_devices:
@@ -195,6 +226,14 @@ class HubService:
             await session.commit()
             self._devices = all_devices
 
+    async def _handle_ping_result(self, data: Dict[str, Any]) -> None:
+        """Update online state from a firmware ping_result event."""
+        ieee = data.get("ieee")
+        online = bool(data.get("online", False))
+        if not ieee:
+            return
+        await self._set_device_online(ieee, online)
+
     async def _handle_command_status(self, data: Dict[str, Any]) -> None:
         """Update device state in DB based on command_status events."""
         status = data.get("status")
@@ -202,6 +241,12 @@ class HubService:
         cluster_id = data.get("cluster_id")
         attr_id = data.get("attr_id")
         endpoint_id = data.get("endpoint")
+
+        if status in ("timeout", "failed") and ieee:
+            await self._set_device_online(ieee, False)
+        elif status in ("completed", "delivered") and ieee:
+            await self._set_device_online(ieee, True)
+
         if not ieee or not cluster_id:
             return
         try:
@@ -210,7 +255,7 @@ class HubService:
                 device = await repo.get_by_ieee(ieee)
                 if not device:
                     return
-                state = device.state or {}
+                state = dict(device.state) if device.state else {}
                 ep_key = str(endpoint_id or "1")
                 if ep_key not in state:
                     state[ep_key] = {}
@@ -262,7 +307,7 @@ class HubService:
                 device = await repo.get_by_ieee(ieee)
                 if not device:
                     return
-                state = device.state or {}
+                state = dict(device.state) if device.state else {}
                 ep_key = str(endpoint_id or "1")
                 if ep_key not in state:
                     state[ep_key] = {}
@@ -274,7 +319,7 @@ class HubService:
                         elif action == DeviceCommand.OFF:
                             state[ep_key]["on"] = not bool(ok)
                         elif action == DeviceCommand.TOGGLE:
-                            state[ep_key]["on"] = bool(ok)
+                            state[ep_key]["on"] = not state[ep_key].get("on", False)
                 elif action == DeviceCommand.LEVEL:
                     if value is not None:
                         state[ep_key]["level"] = int(value)
@@ -304,7 +349,11 @@ class HubService:
 
             # Update in-memory cache for graph executors
             if action in (DeviceCommand.ON, DeviceCommand.OFF, DeviceCommand.TOGGLE) and ok is not None:
-                self._update_cached_device_state(ieee, endpoint_id, {"on": bool(ok) if action in (DeviceCommand.ON, DeviceCommand.TOGGLE) else not bool(ok)})
+                if action == DeviceCommand.TOGGLE:
+                    cached_on = (device.state or {}).get(ep_key, {}).get("on", False)
+                else:
+                    cached_on = bool(ok) if action == DeviceCommand.ON else not bool(ok)
+                self._update_cached_device_state(ieee, endpoint_id, {"on": cached_on})
             elif action == DeviceCommand.LEVEL and value is not None:
                 self._update_cached_device_state(ieee, endpoint_id, {"level": int(value)})
             elif action == DeviceCommand.COLOR and value is not None:
@@ -325,12 +374,16 @@ class HubService:
                 cluster_hex = change.get("cluster", "")
                 attr_hex = change.get("attribute", "")
                 value = change.get("value")
+                endpoint_id = change.get("endpoint")
                 try:
                     cluster_id = int(cluster_hex, 16) if isinstance(cluster_hex, str) and cluster_hex.startswith("0x") else int(cluster_hex)
                     attr_id = int(attr_hex, 16) if isinstance(attr_hex, str) and attr_hex.startswith("0x") else int(attr_hex)
                 except (ValueError, TypeError):
                     continue
-                await self._update_device_state(ieee, None, cluster_id, attr_id, value)
+                # Xiaomi private cluster reports are liveness noise.
+                if cluster_id == 0xFCC0:
+                    continue
+                await self._update_device_state(ieee, endpoint_id, cluster_id, attr_id, value)
         else:
             # Old flat format
             endpoint_id = data.get("endpoint")
@@ -338,6 +391,8 @@ class HubService:
             attr_id = data.get("attr_id")
             value = data.get("value")
             if cluster_id is not None and attr_id is not None and value is not None:
+                if cluster_id == 0xFCC0:
+                    return
                 await self._update_device_state(ieee, endpoint_id, cluster_id, attr_id, value)
 
     async def _update_device_state(self, ieee: str, endpoint_id: Optional[int], cluster_id: int, attr_id: int, value: Any) -> None:
@@ -347,7 +402,7 @@ class HubService:
                 device = await repo.get_by_ieee(ieee)
                 if not device:
                     return
-                state = device.state or {}
+                state = dict(device.state) if device.state else {}
                 ep_key = str(endpoint_id or "1")
                 if ep_key not in state:
                     state[ep_key] = {}
@@ -481,3 +536,131 @@ class HubService:
                 task.cancel()
         await asyncio.gather(*self._bg_tasks, return_exceptions=True)
         self._bg_tasks.clear()
+
+    def _start_ping_loop(self) -> None:
+        """Start the periodic liveness ping loop."""
+        self._stop_ping.clear()
+        if self._ping_task is not None and not self._ping_task.done():
+            return
+        self._ping_task = asyncio.create_task(self._ping_loop())
+
+    def _stop_ping_loop(self) -> None:
+        """Signal the ping loop to stop."""
+        self._stop_ping.set()
+        if self._ping_task is not None and not self._ping_task.done():
+            self._ping_task.cancel()
+
+    async def _ping_loop(self) -> None:
+        """Periodically ping all known devices to detect offline state."""
+        try:
+            while not self._stop_ping.is_set():
+                try:
+                    await asyncio.wait_for(
+                        self._stop_ping.wait(), timeout=PING_INTERVAL_SECONDS
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                if self._stop_ping.is_set() or not self.is_connected():
+                    break
+                await self._ping_all_devices()
+        except asyncio.CancelledError:
+            logger.debug("ping_loop_cancelled")
+        except Exception:
+            logger.exception("ping_loop_failed")
+
+    async def ping_device(self, ieee: str) -> Dict[str, Any]:
+        """Send a single liveness ping to a device and track the result."""
+        correlation_id = self._new_correlation_id()
+        result = await self._client.ping(ieee, correlation_id)
+        self._spawn_background(self._wait_ping_result(ieee, correlation_id))
+        return result
+
+    async def _ping_all_devices(self) -> None:
+        """Send a ping to every cached device and update liveness state."""
+        if not self.is_connected():
+            return
+        devices = list(self._devices)
+        logger.info("ping_all_devices_start", count=len(devices))
+        for i, dev in enumerate(devices):
+            ieee = dev.get("ieee")
+            if not ieee:
+                continue
+            try:
+                result = await self._client.ping(ieee, self._new_correlation_id())
+                correlation_id = result.get("correlation_id")
+                if correlation_id:
+                    self._spawn_background(
+                        self._wait_ping_result(ieee, correlation_id)
+                    )
+            except Exception:
+                logger.exception("ping_send_failed", ieee=ieee)
+            # Stagger pings so the Zigbee network is not flooded.
+            if i < len(devices) - 1:
+                await asyncio.sleep(0.5)
+
+    async def _wait_ping_result(self, ieee: str, correlation_id: str) -> None:
+        """Wait for the firmware ping_result event and update the DB."""
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        self._client._protocol.register_future(correlation_id, future)
+        try:
+            data = await asyncio.wait_for(future, timeout=PING_TIMEOUT_SECONDS)
+            status = data.get("status")
+            if status:
+                # Resolved by command_status (emitted before ping_result)
+                online = status in ("completed", "delivered")
+            else:
+                online = bool(data.get("online", False))
+            await self._set_device_online(ieee, online)
+        except asyncio.TimeoutError:
+            logger.info("ping_wait_timeout", ieee=ieee, correlation_id=correlation_id)
+            await self._set_device_online(ieee, False)
+        finally:
+            self._client._protocol._resolve_future(correlation_id, {})
+
+    def _new_correlation_id(self) -> str:
+        """Generate a short correlation id for hub commands."""
+        import uuid
+
+        return f"ping-{uuid.uuid4().hex[:12]}"
+
+    async def _set_device_online(self, ieee: str, online: bool) -> None:
+        """Update the online / last_seen fields for a single device."""
+        try:
+            async with async_session() as session:
+                repo = DeviceRepository(session)
+                device = await repo.get_by_ieee(ieee)
+                if not device:
+                    return
+                device.online = online
+                if online:
+                    device.last_seen = datetime.now(timezone.utc)
+                await session.commit()
+                logger.info("device_online_updated", ieee=ieee, online=online)
+                self._update_cached_online(ieee, online)
+        except Exception:
+            logger.exception("set_device_online_failed", ieee=ieee, online=online)
+
+    async def _mark_all_devices_offline(self) -> None:
+        """Mark every known device offline (used on disconnect)."""
+        try:
+            async with async_session() as session:
+                repo = DeviceRepository(session)
+                all_devices = await repo.list_with_aliases()
+                for dev in all_devices:
+                    device = await repo.get_by_ieee(dev["ieee"])
+                    if device:
+                        device.online = False
+                await session.commit()
+                for dev in all_devices:
+                    self._update_cached_online(dev["ieee"], False)
+                logger.info("all_devices_marked_offline", count=len(all_devices))
+        except Exception:
+            logger.exception("mark_all_offline_failed")
+
+    def _update_cached_online(self, ieee: str, online: bool) -> None:
+        """Update the in-memory device cache online flag."""
+        for dev in self._devices:
+            if dev.get("ieee") == ieee:
+                dev["online"] = online
+                break
