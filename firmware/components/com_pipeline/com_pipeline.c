@@ -11,7 +11,7 @@
 #include "esp_log.h"
 #include "cJSON.h"
 
-#define COM_PIPELINE_QUEUE_SIZE  16
+#define COM_PIPELINE_QUEUE_SIZE  32
 #define COM_PIPELINE_TASK_STACK  4096
 #define COM_PIPELINE_TASK_PRIO   5
 #define COM_PIPELINE_EMIT_TIMEOUT_MS 100
