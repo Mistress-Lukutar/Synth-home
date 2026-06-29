@@ -17,7 +17,7 @@
 static const char *TAG = "serial_api";
 static SemaphoreHandle_t s_stdout_mutex = NULL;
 
-#define MAX_PENDING_PINGS 8
+#define MAX_PENDING_PINGS 32
 
 typedef struct {
 	bool     active;

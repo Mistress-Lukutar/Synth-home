@@ -18,6 +18,25 @@ esp_err_t zb_cmd_tracker_register(const char *corr_id, uint64_t ieee,
                                   bool check_value, uint32_t expected_val,
                                   uint32_t timeout_ms);
 
+/*
+ * Split registration for callers that must reserve a slot *before* sending the
+ * command and only commit it after a successful transmit. This prevents the
+ * "command sent but no tracking slot" bug.
+ *
+ * Typical flow:
+ *   int slot = zb_cmd_tracker_reserve();
+ *   if (slot < 0) return ESP_ERR_NO_MEM;
+ *   <acquire zigbee lock, send command>
+ *   if (send_failed) { zb_cmd_tracker_release(slot); return error; }
+ *   zb_cmd_tracker_commit(slot, corr_id, ...);
+ */
+int  zb_cmd_tracker_reserve(void);
+void zb_cmd_tracker_commit(int slot, const char *corr_id, uint64_t ieee,
+                           uint16_t cluster_id, uint16_t attr_id,
+                           bool check_value, uint32_t expected_val,
+                           uint32_t timeout_ms);
+void zb_cmd_tracker_release(int slot);
+
 /* Call from attribute report handler (e.g. on_attribute_report). */
 void zb_cmd_tracker_on_report(uint64_t ieee, uint16_t cluster_id, uint16_t attr_id,
                               const void *value, uint8_t type);

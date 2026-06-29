@@ -134,9 +134,18 @@ esp_err_t zb_cluster_send_on_off(uint64_t ieee, uint8_t cmd_id,
 		.on_off_cmd_id = cmd_id,
 	};
 
+	int slot = zb_cmd_tracker_reserve();
+	if (slot < 0) {
+		ESP_LOGE(TAG, "No free tracker slot for On/Off");
+		emit_command_failed(corr_id, "TRACKER_FULL",
+				    "No free command tracking slots");
+		return ESP_ERR_NO_MEM;
+	}
+
 	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for ON/OFF");
 		emit_command_failed(corr_id, "ZIGBEE_LOCK_TIMEOUT", "Zigbee stack busy");
+		zb_cmd_tracker_release(slot);
 		return ESP_FAIL;
 	}
 	uint8_t status = esp_zb_zcl_on_off_cmd_req(&cmd_req);
@@ -145,17 +154,18 @@ esp_err_t zb_cluster_send_on_off(uint64_t ieee, uint8_t cmd_id,
 		ESP_LOGE(TAG, "Failed to send On/Off command");
 		emit_command_failed(corr_id, "ZCL_SEND_FAILED",
 				    "Failed to send ZCL command");
+		zb_cmd_tracker_release(slot);
 		return ESP_FAIL;
 	}
 
 	bool on = (cmd_id == ZB_CMD_ON_OFF_ON);
 	bool off = (cmd_id == ZB_CMD_ON_OFF_OFF);
 	if (on || off) {
-		zb_cmd_tracker_register(corr_id, ieee, 0x0006, 0x0000, true,
-					on ? 1U : 0U, ZB_CMD_TRACKER_TIMEOUT_MS);
+		zb_cmd_tracker_commit(slot, corr_id, ieee, 0x0006, 0x0000, true,
+				      on ? 1U : 0U, ZB_CMD_TRACKER_TIMEOUT_MS);
 	} else {
-		zb_cmd_tracker_register(corr_id, ieee, 0x0006, 0xFFFF, false,
-					0, ZB_CMD_TRACKER_TIMEOUT_MS);
+		zb_cmd_tracker_commit(slot, corr_id, ieee, 0x0006, 0xFFFF, false,
+				      0, ZB_CMD_TRACKER_TIMEOUT_MS);
 	}
 	return ESP_OK;
 }
@@ -182,9 +192,18 @@ esp_err_t zb_cluster_send_level(uint64_t ieee, uint8_t level,
 		.transition_time = transition,
 	};
 
+	int slot = zb_cmd_tracker_reserve();
+	if (slot < 0) {
+		ESP_LOGE(TAG, "No free tracker slot for Level");
+		emit_command_failed(corr_id, "TRACKER_FULL",
+				    "No free command tracking slots");
+		return ESP_ERR_NO_MEM;
+	}
+
 	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for Level");
 		emit_command_failed(corr_id, "ZIGBEE_LOCK_TIMEOUT", "Zigbee stack busy");
+		zb_cmd_tracker_release(slot);
 		return ESP_FAIL;
 	}
 	uint8_t status = esp_zb_zcl_level_move_to_level_cmd_req(&cmd_req);
@@ -193,11 +212,12 @@ esp_err_t zb_cluster_send_level(uint64_t ieee, uint8_t level,
 		ESP_LOGE(TAG, "Failed to send Level command");
 		emit_command_failed(corr_id, "ZCL_SEND_FAILED",
 				    "Failed to send ZCL command");
+		zb_cmd_tracker_release(slot);
 		return ESP_FAIL;
 	}
 
-	zb_cmd_tracker_register(corr_id, ieee, 0x0008, 0x0000, true,
-				level, ZB_CMD_TRACKER_TIMEOUT_MS);
+	zb_cmd_tracker_commit(slot, corr_id, ieee, 0x0008, 0x0000, true,
+			      level, ZB_CMD_TRACKER_TIMEOUT_MS);
 	return ESP_OK;
 }
 
@@ -224,9 +244,18 @@ esp_err_t zb_cluster_send_color_hs(uint64_t ieee, uint8_t hue, uint8_t sat,
 		.transition_time = transition,
 	};
 
+	int slot = zb_cmd_tracker_reserve();
+	if (slot < 0) {
+		ESP_LOGE(TAG, "No free tracker slot for Color HS");
+		emit_command_failed(corr_id, "TRACKER_FULL",
+				    "No free command tracking slots");
+		return ESP_ERR_NO_MEM;
+	}
+
 	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for Color HS");
 		emit_command_failed(corr_id, "ZIGBEE_LOCK_TIMEOUT", "Zigbee stack busy");
+		zb_cmd_tracker_release(slot);
 		return ESP_FAIL;
 	}
 	uint8_t status = esp_zb_zcl_color_move_to_hue_and_saturation_cmd_req(&cmd_req);
@@ -235,11 +264,12 @@ esp_err_t zb_cluster_send_color_hs(uint64_t ieee, uint8_t hue, uint8_t sat,
 		ESP_LOGE(TAG, "Failed to send Color HS command");
 		emit_command_failed(corr_id, "ZCL_SEND_FAILED",
 				    "Failed to send ZCL command");
+		zb_cmd_tracker_release(slot);
 		return ESP_FAIL;
 	}
 
-	zb_cmd_tracker_register(corr_id, ieee, 0x0300, 0x0000, true,
-				hue, ZB_CMD_TRACKER_TIMEOUT_MS);
+	zb_cmd_tracker_commit(slot, corr_id, ieee, 0x0300, 0x0000, true,
+			      hue, ZB_CMD_TRACKER_TIMEOUT_MS);
 	return ESP_OK;
 }
 
@@ -266,9 +296,18 @@ esp_err_t zb_cluster_send_color_xy(uint64_t ieee, uint16_t x, uint16_t y,
 		.transition_time = transition,
 	};
 
+	int slot = zb_cmd_tracker_reserve();
+	if (slot < 0) {
+		ESP_LOGE(TAG, "No free tracker slot for Color XY");
+		emit_command_failed(corr_id, "TRACKER_FULL",
+				    "No free command tracking slots");
+		return ESP_ERR_NO_MEM;
+	}
+
 	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for Color XY");
 		emit_command_failed(corr_id, "ZIGBEE_LOCK_TIMEOUT", "Zigbee stack busy");
+		zb_cmd_tracker_release(slot);
 		return ESP_FAIL;
 	}
 	uint8_t status = esp_zb_zcl_color_move_to_color_cmd_req(&cmd_req);
@@ -277,11 +316,12 @@ esp_err_t zb_cluster_send_color_xy(uint64_t ieee, uint16_t x, uint16_t y,
 		ESP_LOGE(TAG, "Failed to send Color XY command");
 		emit_command_failed(corr_id, "ZCL_SEND_FAILED",
 				    "Failed to send ZCL command");
+		zb_cmd_tracker_release(slot);
 		return ESP_FAIL;
 	}
 
-	zb_cmd_tracker_register(corr_id, ieee, 0x0300, 0x0003, true,
-				x, ZB_CMD_TRACKER_TIMEOUT_MS);
+	zb_cmd_tracker_commit(slot, corr_id, ieee, 0x0300, 0x0003, true,
+			      x, ZB_CMD_TRACKER_TIMEOUT_MS);
 	return ESP_OK;
 }
 
@@ -307,9 +347,18 @@ esp_err_t zb_cluster_send_color_ct(uint64_t ieee, uint16_t mireds,
 		.transition_time = transition,
 	};
 
+	int slot = zb_cmd_tracker_reserve();
+	if (slot < 0) {
+		ESP_LOGE(TAG, "No free tracker slot for Color CT");
+		emit_command_failed(corr_id, "TRACKER_FULL",
+				    "No free command tracking slots");
+		return ESP_ERR_NO_MEM;
+	}
+
 	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for Color CT");
 		emit_command_failed(corr_id, "ZIGBEE_LOCK_TIMEOUT", "Zigbee stack busy");
+		zb_cmd_tracker_release(slot);
 		return ESP_FAIL;
 	}
 	uint8_t status = esp_zb_zcl_color_move_to_color_temperature_cmd_req(&cmd_req);
@@ -318,11 +367,12 @@ esp_err_t zb_cluster_send_color_ct(uint64_t ieee, uint16_t mireds,
 		ESP_LOGE(TAG, "Failed to send Color CT command");
 		emit_command_failed(corr_id, "ZCL_SEND_FAILED",
 				    "Failed to send ZCL command");
+		zb_cmd_tracker_release(slot);
 		return ESP_FAIL;
 	}
 
-	zb_cmd_tracker_register(corr_id, ieee, 0x0300, 0x0007, true,
-				mireds, ZB_CMD_TRACKER_TIMEOUT_MS);
+	zb_cmd_tracker_commit(slot, corr_id, ieee, 0x0300, 0x0007, true,
+			      mireds, ZB_CMD_TRACKER_TIMEOUT_MS);
 	return ESP_OK;
 }
 
@@ -350,9 +400,21 @@ static esp_err_t s_cluster_read_attr(uint64_t ieee, uint8_t ep_id,
 		.attr_field = &attr,
 	};
 
+	int slot = -1;
+	if (silent) {
+		slot = zb_cmd_tracker_reserve();
+		if (slot < 0) {
+			ESP_LOGE(TAG, "No free tracker slot for ping/read attr");
+			emit_command_failed(corr_id, "TRACKER_FULL",
+					    "No free command tracking slots");
+			return ESP_ERR_NO_MEM;
+		}
+	}
+
 	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for read attr");
 		emit_command_failed(corr_id, "ZIGBEE_LOCK_TIMEOUT", "Zigbee stack busy");
+		zb_cmd_tracker_release(slot);
 		return ESP_FAIL;
 	}
 	uint8_t status = esp_zb_zcl_read_attr_cmd_req(&read_req);
@@ -361,15 +423,15 @@ static esp_err_t s_cluster_read_attr(uint64_t ieee, uint8_t ep_id,
 		ESP_LOGE(TAG, "Failed to send read attr command");
 		emit_command_failed(corr_id, "ZCL_SEND_FAILED",
 				    "Failed to send ZCL read attr command");
+		zb_cmd_tracker_release(slot);
 		return ESP_FAIL;
 	}
 
 	if (silent) {
-		zb_cmd_tracker_register(corr_id, ieee, cluster_id, attr_id, false,
-					0, ZB_PING_TIMEOUT_MS);
+		zb_cmd_tracker_commit(slot, corr_id, ieee, cluster_id, attr_id, false,
+				      0, ZB_PING_TIMEOUT_MS);
 	}
 
-	(void)silent;
 	return ESP_OK;
 }
 
