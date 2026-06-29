@@ -118,6 +118,20 @@ python -m esptool --chip esp32c6 -b 460800 --before default_reset --after hard_r
 2. **Develop branch**: `develop` - integration branch
 3. **Feature branches**: `feature/{name}` - new features
 
+## WebUI State Management
+
+The WebUI uses a single authority for persisted device state.
+
+- **Source of truth:** `Device.state` in the database.
+- **Only valid writers:** `DeviceStateManager` (`app/services/device_state_manager.py`) updates `Device.state`.
+- **Firmware protocol contract:**
+  - `state_change` events carry actual attribute values and are the only events that update `Device.state`.
+  - `*_ack` events (`on_ack`, `off_ack`, `read_attr_ack`, …) contain only `ok`/`error` and report whether the firmware accepted the command. They must **not** be used to update state.
+  - `command_status` events report delivery/completion/timeout and may update `Device.online`, but must **not** update `Device.state`.
+- **Command lifecycle:** `HubService.send_command` registers each command in `DeviceStateManager`. The pending command is resolved when a matching `state_change` arrives or when `command_status` reports a terminal status.
+- **Automation:** graph node executors send commands through `HubService` and read state from the in-memory cache (`HubService.get_cached_devices()`). They never write to the database directly.
+- **Frontend:** the UI reflects pending commands via `pendingCommands`, but it only mutates `device.state` on `state_change` events.
+
 ## Important Notes
 
 - All documentation and code in **English**

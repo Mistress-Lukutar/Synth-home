@@ -19,6 +19,7 @@ from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.logging import StructuredLoggingMiddleware
 from app.routers import connection, devices, network, panels, graphs, node_registry
 from app.services import sse_manager
+from app.services.device_state_manager import DeviceStateManager
 from app.services.event_bus import EventBus
 from app.services.hub_service import HubService
 
@@ -26,6 +27,7 @@ from app.db import engine, async_session
 from sqlalchemy import select, text
 from app.models.db_models import SystemSetting
 from app.scheduler_engine import start_scheduler, stop_scheduler, get_scheduler
+
 
 logger = structlog.get_logger(__name__)
 
@@ -70,8 +72,14 @@ def create_app() -> FastAPI:
         event_bus = EventBus()
         app.state.event_bus = event_bus
 
+        # Device state manager - single source of truth for persisted state
+        device_state_manager = DeviceStateManager()
+        app.state.device_state_manager = device_state_manager
+
         # Hub service (stateful singleton bound to app lifespan)
-        hub_service = HubService(event_bus=event_bus)
+        hub_service = HubService(
+            event_bus=event_bus, state_manager=device_state_manager
+        )
         app.state.hub_service = hub_service
 
         # Node registry (populated once at startup)
@@ -82,7 +90,6 @@ def create_app() -> FastAPI:
         # Panel state + graph executor
         from app.services.panel_state_service import PanelStateService
         from app.services.graph_executor import GraphExecutor
-        from app.db import async_session
 
         panel_state_service = PanelStateService(event_bus=event_bus)
         app.state.panel_state_service = panel_state_service
@@ -91,6 +98,7 @@ def create_app() -> FastAPI:
             hub_service=hub_service,
             panel_state_service=panel_state_service,
             node_registry=node_registry,
+            device_state_manager=device_state_manager,
         )
         app.state.graph_executor = graph_executor
 

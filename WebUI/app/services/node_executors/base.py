@@ -6,6 +6,7 @@ from typing import Any
 import structlog
 
 from app.models.db_models import GraphNode
+from app.services.device_state_manager import DeviceStateManager
 from app.services.panel_state_service import PanelStateService
 from app.services.hub_service import HubService
 
@@ -25,12 +26,14 @@ class ExecutionContext:
         graph_id: int,
         hub_service: HubService | None,
         panel_state_service: PanelStateService | None,
+        device_state_manager: DeviceStateManager | None = None,
         triggered_node_id: str | None = None,
     ) -> None:
         self.panel_id = panel_id
         self.graph_id = graph_id
         self.hub_service = hub_service
         self.panel_state_service = panel_state_service
+        self.device_state_manager = device_state_manager
         self.triggered_node_id = triggered_node_id
         self._cache: dict[str, dict[str, Any]] = {}
 

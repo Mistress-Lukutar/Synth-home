@@ -113,71 +113,48 @@ function handleSSEMessage(msg: any) {
 }
 
 function handleAck(data: any) {
-  const evt = data.evt || data.event || ''
-  const action = evt.replace('_ack', '')
-  const ieee = data.ieee
+  const correlationId = data.correlation_id
   const ok = data.ok
-  const value = data.value
-  const endpoint = data.endpoint
-  if (!ieee) return
+  const error = data.error
+  if (!correlationId) return
 
-  const device = state.devices.find(d => d.ieee === ieee)
-  if (!device) return
-  if (!device.state) device.state = {}
-  const epKey = String(endpoint || '1')
-  if (!device.state[epKey]) device.state[epKey] = {}
+  const pending = state.pendingCommands.get(correlationId)
+  if (!pending) return
 
-  if (action === 'on') {
-    device.state[epKey].on = Boolean(ok)
-  } else if (action === 'off') {
-    device.state[epKey].on = !Boolean(ok)
-  } else if (action === 'toggle') {
-    device.state[epKey].on = !device.state[epKey].on
-  } else if (action === 'level') {
-    if (value !== undefined) device.state[epKey].level = Number(value)
-  } else if (action === 'color') {
-    if (value !== undefined) device.state[epKey].color = value
-  } else if (action === 'read_attr') {
-    const cluster = data.cluster_id ?? (data.cluster ? parseInt(data.cluster, 16) : undefined)
-    const attr = data.attr_id ?? (data.attribute ? parseInt(data.attribute, 16) : undefined)
-    const val = data.value
-    if (cluster !== undefined && attr !== undefined && val !== undefined) {
-      if (cluster === 0x0006 && attr === 0x0000) {
-        device.state[epKey].on = Boolean(val)
-      } else if (cluster === 0x0008 && attr === 0x0000) {
-        device.state[epKey].level = Number(val)
-      } else if (cluster === 0x0008 && attr === 0x0002) {
-        device.state[epKey].level_min = Number(val)
-      } else if (cluster === 0x0008 && attr === 0x0003) {
-        device.state[epKey].level_max = Number(val)
-      } else if (cluster === 0x0300 && attr === 0x0008) {
-        const modeVal = Number(val)
-        if (modeVal === 0) device.state[epKey].color_mode = 'hs'
-        else if (modeVal === 1) device.state[epKey].color_mode = 'xy'
-        else if (modeVal === 2) device.state[epKey].color_mode = 'ct'
-      } else if (cluster === 0x0300 && attr === 0x4002) {
-        const bitmask = Number(val)
-        device.state[epKey].color_caps = {
-          hs: !!(bitmask & 0x01),
-          xy: !!(bitmask & 0x10),
-          ct: !!(bitmask & 0x20),
-          color_loop: !!(bitmask & 0x08),
-        }
-      } else if (cluster === 0x0300 && attr === 0x0000) {
-        device.state[epKey].hue = Number(val)
-      } else if (cluster === 0x0300 && attr === 0x0001) {
-        device.state[epKey].sat = Number(val)
-      } else if (cluster === 0x0300 && attr === 0x0003) {
-        device.state[epKey].x = Number(val)
-      } else if (cluster === 0x0300 && attr === 0x0004) {
-        device.state[epKey].y = Number(val)
-      } else if (cluster === 0x0300 && attr === 0x0007) {
-        device.state[epKey].ct = Number(val)
-      } else if (cluster === 0x0300 && attr === 0x400B) {
-        device.state[epKey].ct_min = Number(val)
-      } else if (cluster === 0x0300 && attr === 0x400C) {
-        device.state[epKey].ct_max = Number(val)
-      }
+  // An ack only tells us whether the firmware accepted the command. The actual
+  // state update arrives via a state_change event. Failed sends are dropped
+  // immediately; successful sends stay pending until confirmed.
+  if (!ok) {
+    logEvent(`Command ${pending.action} failed: ${error || 'unknown'}`)
+    state.pendingCommands.delete(correlationId)
+  } else {
+    logEvent(`Command ${pending.action} accepted`)
+  }
+}
+
+function resolvePendingByStateChange(
+  ieee: string,
+  endpoint: number | undefined,
+  clusterId: number,
+  attrId: number,
+  value: any,
+) {
+  const ep = endpoint ?? 1
+  for (const [correlationId, pending] of state.pendingCommands) {
+    if (pending.ieee !== ieee || pending.endpoint !== ep) continue
+    const action = pending.action
+    let resolved = false
+    if (clusterId === 0x0006 && attrId === 0x0000) {
+      if (action === 'on' && value === true) resolved = true
+      else if (action === 'off' && value === false) resolved = true
+      else if (action === 'toggle') resolved = true
+    } else if (clusterId === 0x0008 && attrId === 0x0000 && action === 'level') {
+      resolved = true
+    } else if (clusterId === 0x0300 && (action === 'color' || action === 'color_ct')) {
+      resolved = true
+    }
+    if (resolved) {
+      state.pendingCommands.delete(correlationId)
     }
   }
 }
@@ -195,7 +172,8 @@ function handleStateChange(data: any) {
       const cluster = change.cluster || ''
       const attr = change.attribute || ''
       const value = change.value
-      const epKey = String(change.endpoint ?? '1')
+      const endpoint = change.endpoint
+      const epKey = String(endpoint ?? '1')
       if (!device.state[epKey]) device.state[epKey] = {}
 
       const clusterId = parseInt(cluster, 16)
@@ -205,6 +183,8 @@ function handleStateChange(data: any) {
       if (clusterId === 0xFCC0) {
         continue
       }
+
+      resolvePendingByStateChange(ieee, endpoint, clusterId, attrId, value)
 
       if (clusterId === 0x0006 && attrId === 0x0000) {
         device.state[epKey].on = Boolean(value)
@@ -245,11 +225,15 @@ function handleStateChange(data: any) {
     }
   } else {
     // Old flat format fallback
-    const epKey = String(data.endpoint || '1')
+    const endpoint = data.endpoint
+    const epKey = String(endpoint || '1')
     if (!device.state[epKey]) device.state[epKey] = {}
     const clusterId = data.cluster_id
     const attrId = data.attr_id
     const value = data.value
+    if (clusterId !== undefined && attrId !== undefined && value !== undefined) {
+      resolvePendingByStateChange(ieee, endpoint, clusterId, attrId, value)
+    }
     if (clusterId === 6 && attrId === 0) device.state[epKey].on = Boolean(value)
     else if (clusterId === 8) device.state[epKey].level = Number(value)
     else if (clusterId === 768) device.state[epKey].color = value
@@ -259,14 +243,21 @@ function handleStateChange(data: any) {
 function handleCommandStatus(data: any) {
   const correlationId = data.correlation_id
   const status = data.status
-  const ieee = data.ieee_addr
+  const ieee = data.ieee_addr || data.ieee
 
+  // command_status carries delivery/completion status and liveness only.
+  // The actual attribute values come via state_change.
   if (ieee && (status === 'timeout' || status === 'failed')) {
     const device = state.devices.find(d => d.ieee === ieee)
     if (device) {
       device.online = false
       logEvent(`Device ${ieee} marked offline (${status})`)
     }
+  }
+
+  if (ieee && (status === 'completed' || status === 'delivered')) {
+    const device = state.devices.find(d => d.ieee === ieee)
+    if (device) device.online = true
   }
 
   if (!correlationId) return
@@ -276,28 +267,10 @@ function handleCommandStatus(data: any) {
 
   if (status === 'timeout' || status === 'failed') {
     logEvent(`Command ${pending.action} ${status} for ${pending.ieee}`)
-    state.pendingCommands.delete(correlationId)
-    return
   }
 
-  if (status === 'completed') {
-    const device = state.devices.find(d => d.ieee === pending.ieee)
-    if (device) {
-      device.online = true
-      const epKey = String(pending.endpoint || '1')
-      if (!device.state) device.state = {}
-      if (!device.state[epKey]) device.state[epKey] = {}
-      if (pending.action === 'on') device.state[epKey].on = true
-      else if (pending.action === 'off') device.state[epKey].on = false
-      else if (pending.action === 'toggle') device.state[epKey].on = !device.state[epKey].on
-    }
+  if (status === 'timeout' || status === 'failed' || status === 'completed' || status === 'delivered') {
     state.pendingCommands.delete(correlationId)
-  } else if (status === 'delivered') {
-    const device = state.devices.find(d => d.ieee === pending.ieee)
-    if (device) device.online = true
-    // Intermediate state — keep waiting for completion/state_change
-  } else if (status === 'pending') {
-    // Intermediate state — keep waiting
   }
 }
 
