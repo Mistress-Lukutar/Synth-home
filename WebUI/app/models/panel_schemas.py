@@ -22,6 +22,7 @@ class PanelCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     is_enabled: bool = True
     sort_order: int = 0
+    collapsed: bool = False
     layout: PanelLayout = Field(default_factory=PanelLayout)
 
 
@@ -29,6 +30,7 @@ class PanelUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=128)
     is_enabled: Optional[bool] = None
     sort_order: Optional[int] = None
+    collapsed: Optional[bool] = None
     layout: Optional[PanelLayout] = None
 
 
@@ -37,6 +39,7 @@ class PanelOut(BaseModel):
     name: str
     is_enabled: bool
     sort_order: int
+    collapsed: bool
     layout: Optional[dict]
     created_at: datetime
     updated_at: Optional[datetime] = None
@@ -135,6 +138,7 @@ class PanelExportData(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     is_enabled: bool = True
     sort_order: int = 0
+    collapsed: bool = False
     layout: dict = Field(default_factory=dict)
 
 

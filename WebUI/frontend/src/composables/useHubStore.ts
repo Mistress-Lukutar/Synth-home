@@ -19,6 +19,7 @@ export interface Panel {
   name: string
   is_enabled: boolean
   sort_order: number
+  collapsed: boolean
   layout?: Record<string, any>
   created_at?: string
   updated_at?: string
@@ -47,6 +48,7 @@ interface State {
   evtSource: EventSource | null
   sseReconnectTimer: ReturnType<typeof setTimeout> | null
   refreshingDevices: boolean
+  refreshInterval: ReturnType<typeof setInterval> | null
 }
 
 const state = reactive<State>({
@@ -61,6 +63,7 @@ const state = reactive<State>({
   evtSource: null,
   sseReconnectTimer: null,
   refreshingDevices: false,
+  refreshInterval: null,
 })
 
 function logEvent(text: string) {
@@ -97,6 +100,9 @@ function handleSSEMessage(msg: any) {
     if (evt === 'command_status') {
       handleCommandStatus(data)
     }
+    if (evt === 'ping_result') {
+      handlePingResult(data)
+    }
   } else if (msg.type === 'panel_output') {
     const { panel_id, node_id, value } = msg
     if (!state.panelOutputs[panel_id]) {
@@ -126,7 +132,7 @@ function handleAck(data: any) {
   } else if (action === 'off') {
     device.state[epKey].on = !Boolean(ok)
   } else if (action === 'toggle') {
-    device.state[epKey].on = Boolean(ok)
+    device.state[epKey].on = !device.state[epKey].on
   } else if (action === 'level') {
     if (value !== undefined) device.state[epKey].level = Number(value)
   } else if (action === 'color') {
@@ -189,11 +195,16 @@ function handleStateChange(data: any) {
       const cluster = change.cluster || ''
       const attr = change.attribute || ''
       const value = change.value
-      const epKey = '1' // read_attr doesn't specify endpoint in changes; assume 1
+      const epKey = String(change.endpoint ?? '1')
       if (!device.state[epKey]) device.state[epKey] = {}
 
       const clusterId = parseInt(cluster, 16)
       const attrId = parseInt(attr, 16)
+
+      // Xiaomi private cluster reports are liveness noise.
+      if (clusterId === 0xFCC0) {
+        continue
+      }
 
       if (clusterId === 0x0006 && attrId === 0x0000) {
         device.state[epKey].on = Boolean(value)
@@ -248,14 +259,23 @@ function handleStateChange(data: any) {
 function handleCommandStatus(data: any) {
   const correlationId = data.correlation_id
   const status = data.status
+  const ieee = data.ieee_addr
+
+  if (ieee && (status === 'timeout' || status === 'failed')) {
+    const device = state.devices.find(d => d.ieee === ieee)
+    if (device) {
+      device.online = false
+      logEvent(`Device ${ieee} marked offline (${status})`)
+    }
+  }
+
   if (!correlationId) return
 
   const pending = state.pendingCommands.get(correlationId)
   if (!pending) return
 
-  // Ignore timeout — on_ack or state_change will eventually update the real state
-  if (status === 'timeout') {
-    logEvent(`Command ${pending.action} timeout for ${pending.ieee} (ignored, waiting for on_ack/state_change)`)
+  if (status === 'timeout' || status === 'failed') {
+    logEvent(`Command ${pending.action} ${status} for ${pending.ieee}`)
     state.pendingCommands.delete(correlationId)
     return
   }
@@ -263,6 +283,7 @@ function handleCommandStatus(data: any) {
   if (status === 'completed') {
     const device = state.devices.find(d => d.ieee === pending.ieee)
     if (device) {
+      device.online = true
       const epKey = String(pending.endpoint || '1')
       if (!device.state) device.state = {}
       if (!device.state[epKey]) device.state[epKey] = {}
@@ -271,11 +292,24 @@ function handleCommandStatus(data: any) {
       else if (pending.action === 'toggle') device.state[epKey].on = !device.state[epKey].on
     }
     state.pendingCommands.delete(correlationId)
-  } else if (status === 'failed') {
-    logEvent(`Command ${pending.action} failed for ${pending.ieee}`)
-    state.pendingCommands.delete(correlationId)
-  } else if (status === 'pending' || status === 'delivered') {
-    // Intermediate states — keep waiting
+  } else if (status === 'delivered') {
+    const device = state.devices.find(d => d.ieee === pending.ieee)
+    if (device) device.online = true
+    // Intermediate state — keep waiting for completion/state_change
+  } else if (status === 'pending') {
+    // Intermediate state — keep waiting
+  }
+}
+
+function handlePingResult(data: any) {
+  const ieee = data.ieee
+  const online = data.online === true
+  if (!ieee) return
+  const device = state.devices.find(d => d.ieee === ieee)
+  if (!device) return
+  device.online = online
+  if (!online) {
+    logEvent(`Ping: ${ieee} is offline`)
   }
 }
 
@@ -316,6 +350,10 @@ function stopSSE() {
     state.evtSource.close()
     state.evtSource = null
   }
+  if (state.refreshInterval) {
+    clearInterval(state.refreshInterval)
+    state.refreshInterval = null
+  }
   state.sseReconnectDelay = 1000
 }
 
@@ -338,8 +376,12 @@ async function connect(port: string): Promise<boolean> {
       logEvent(`Connected: ${port}`)
       startSSE()
       await loadDevices()      // quick cache from DB
-      await refreshDevices()   // sync with hub
-      await pollDevices()      // read attributes
+      await refreshDevices()   // sync with hub and poll attributes
+      if (!state.refreshInterval) {
+        state.refreshInterval = setInterval(async () => {
+          await refreshDevices()
+        }, 30000)
+      }
       return true
     } else {
       logEvent(data.error || 'Connection failed')
@@ -386,6 +428,9 @@ async function refreshDevices() {
   } finally {
     state.refreshingDevices = false
   }
+  // Refresh only reloads topology from DB; poll actual attributes so the UI
+  // does not keep showing a stale on/off state.
+  await pollDevices()
 }
 
 async function restoreConnection() {
@@ -396,8 +441,13 @@ async function restoreConnection() {
       state.currentPort = data.port
       startSSE()
       await loadDevices()   // quick cache from DB
-      // Fire-and-forget poll to fill state via read_attr_ack
-      setTimeout(() => pollDevices(), 300)
+      // Bring state in sync with the hub (includes attribute poll).
+      setTimeout(() => refreshDevices(), 300)
+      if (!state.refreshInterval) {
+        state.refreshInterval = setInterval(async () => {
+          await refreshDevices()
+        }, 30000)
+      }
     }
   } catch {
     // stay disconnected

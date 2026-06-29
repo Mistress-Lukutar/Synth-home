@@ -39,9 +39,9 @@
           <div
             v-if="hasCluster(ep, 6)"
             class="toggle-switch"
-            :class="{ on: getState(ep.id, 'on') === true, pending: isPending(ep.id, 'on') || isPending(ep.id, 'off') || isPending(ep.id, 'toggle') }"
+            :class="{ on: getState(ep.id, 'on') === true, pending: isPending(ep.id, 'on') || isPending(ep.id, 'off') || isPending(ep.id, 'toggle'), disabled: device.online === false }"
             @click="toggleOnOff(ep.id)"
-            title="Toggle On/Off"
+            :title="device.online === false ? 'Device offline' : 'Toggle On/Off'"
           >
             <div class="knob"></div>
           </div>
@@ -55,7 +55,7 @@
               :max="getState(ep.id, 'level_max') ?? 255"
               :value="getState(ep.id, 'level') ?? (getState(ep.id, 'level_max') ?? 255) / 2"
               @change="(e) => setLevel(ep.id, Number((e.target as HTMLInputElement).value))"
-              :disabled="isPending(ep.id, 'level')"
+              :disabled="isPending(ep.id, 'level') || device.online === false"
             />
           </div>
 
@@ -67,6 +67,7 @@
                 class="color-mode-select"
                 v-model="uiColorModes[ep.id]"
                 @change="onColorModeChange(ep.id, uiColorModes[ep.id])"
+                :disabled="device.online === false"
               >
                 <option v-if="colorSupports(ep.id, 'hs') || colorSupports(ep.id, 'xy')" value="rgb">RGB</option>
                 <option v-if="colorSupports(ep.id, 'ct')" value="ct">CT</option>
@@ -81,6 +82,7 @@
                   class="color-picker-native"
                   :value="lastHex[ep.id] || '#ffffff'"
                   @change="(e) => setColorRgb(ep.id, (e.target as HTMLInputElement).value)"
+                  :disabled="device.online === false"
                 />
               </div>
             </template>
@@ -95,6 +97,7 @@
                   class="ct-slider"
                   :value="getState(ep.id, 'ct') ?? 300"
                   @change="(e) => setCt(ep.id, Number((e.target as HTMLInputElement).value))"
+                  :disabled="device.online === false"
                 />
               </div>
             </template>
@@ -396,6 +399,11 @@ async function setCt(epId: number, ct: number) {
 .toggle-switch.on .knob { left: 29px; }
 .toggle-switch.pending { background: #ffaa00; }
 .toggle-switch.pending .knob { left: 16px; }
+.toggle-switch.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
 
 /* Brightness slider */
 .level-control {

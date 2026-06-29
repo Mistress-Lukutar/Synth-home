@@ -42,8 +42,19 @@ class Panel(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     sort_order: Mapped[int] = mapped_column(default=0)
+    collapsed: Mapped[bool] = mapped_column(Boolean, default=False)
     layout: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(default=utc_now, onupdate=utc_now)
+
+
+class SystemSetting(Base):
+    """Generic key-value store for application runtime settings."""
+
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(default=utc_now, onupdate=utc_now)
 
 

@@ -71,6 +71,16 @@ async def rename_device(
     return {"success": True, "ieee": ieee, "name": req.name}
 
 
+@router.post("/api/devices/{ieee}/ping", status_code=status.HTTP_202_ACCEPTED, response_model=CommandResponse)
+async def ping_device(
+    ieee: str,
+    service: Annotated[HubService, Depends(require_connection)],
+) -> CommandResponse:
+    """Send a liveness ping to a Zigbee device."""
+    result = await service.ping_device(ieee)
+    return CommandResponse(correlation_id=result["correlation_id"], status=result["status"])
+
+
 @router.post("/api/devices/{ieee}/read-attr", status_code=status.HTTP_202_ACCEPTED, response_model=CommandResponse)
 async def read_device_attr(
     ieee: str,
