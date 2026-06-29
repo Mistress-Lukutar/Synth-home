@@ -277,16 +277,19 @@ async function sendAndTrack(action: string, epId: number, params?: object) {
 }
 
 async function toggleOnOff(epId: number) {
+  if (isPending(epId, 'on') || isPending(epId, 'off') || isPending(epId, 'toggle')) return
   const current = getState(epId, 'on') === true
   const action = current ? 'off' : 'on'
   await sendAndTrack(action, epId)
 }
 
 async function setLevel(epId: number, level: number) {
+  if (isPending(epId, 'level')) return
   await sendAndTrack('level', epId, { level })
 }
 
 async function setColorRgb(epId: number, hex: string) {
+  if (isPending(epId, 'color')) return
   lastHex[epId] = hex
   const caps = getState(epId, 'color_caps') || { hs: true, xy: true }
   // Prefer XY if supported (more compatible), fallback to HS
@@ -304,6 +307,7 @@ async function setColorRgb(epId: number, hex: string) {
 }
 
 async function setCt(epId: number, ct: number) {
+  if (isPending(epId, 'color_ct')) return
   try {
     const result = await api.sendColorCt(props.device.ieee, ct, epId)
     store.state.pendingCommands.set(result.correlation_id, {

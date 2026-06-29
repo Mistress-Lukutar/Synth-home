@@ -43,7 +43,6 @@ class DeviceRepository(BaseRepository[Device]):
                     "state": device.state or {},
                     "online": device.online,
                     "last_seen": device.last_seen.isoformat() if device.last_seen else None,
-                    "last_command": device.last_command,
                 }
             )
         return rows

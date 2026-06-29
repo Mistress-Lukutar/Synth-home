@@ -6,8 +6,9 @@ from typing import Any
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.db_models import GraphConnection, GraphNode, NodeGraph
+from app.models.db_models import GraphConnection, GraphNode
 from app.repositories.graph import GraphConnectionRepository, GraphNodeRepository, NodeGraphRepository
+from app.services.device_state_manager import DeviceStateManager
 from app.services.hub_service import HubService
 from app.services.node_registry import NodeRegistry
 from app.services.panel_state_service import PanelStateService
@@ -30,10 +31,12 @@ class GraphExecutor:
         hub_service: HubService | None,
         panel_state_service: PanelStateService | None,
         node_registry: NodeRegistry | None = None,
+        device_state_manager: DeviceStateManager | None = None,
     ) -> None:
         self._hub_service = hub_service
         self._panel_state_service = panel_state_service
         self._node_registry = node_registry
+        self._device_state_manager = device_state_manager
 
     async def run(
         self,
@@ -69,6 +72,7 @@ class GraphExecutor:
             graph_id=graph.id,
             hub_service=self._hub_service,
             panel_state_service=self._panel_state_service,
+            device_state_manager=self._device_state_manager,
             triggered_node_id=triggered_node_id,
         )
 

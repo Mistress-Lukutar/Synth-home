@@ -86,11 +86,11 @@ async def test_update_device_state_caches_static_attrs_into_endpoints():
     event_bus = EventBus()
     hub = HubService(event_bus=event_bus)
 
-    await hub._update_device_state("00:11:22:33:44:55:66:77", 1, 8, 2, 10)
-    await hub._update_device_state("00:11:22:33:44:55:66:77", 1, 8, 3, 254)
-    await hub._update_device_state("00:11:22:33:44:55:66:77", 1, 768, 0x4002, 0x31)
-    await hub._update_device_state("00:11:22:33:44:55:66:77", 1, 768, 0x400B, 250)
-    await hub._update_device_state("00:11:22:33:44:55:66:77", 1, 768, 0x400C, 454)
+    await hub._state_manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 8, 2, 10)
+    await hub._state_manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 8, 3, 254)
+    await hub._state_manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 768, 0x4002, 0x31)
+    await hub._state_manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 768, 0x400B, 250)
+    await hub._state_manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 768, 0x400C, 454)
 
     async with async_session() as session:
         from app.repositories.device import DeviceRepository
