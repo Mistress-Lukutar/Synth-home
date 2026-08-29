@@ -68,6 +68,9 @@ uint8_t zb_device_mgr_get_endpoint_count(uint64_t ieee);
 esp_err_t zb_device_mgr_save(void);
 esp_err_t zb_device_mgr_load(void);
 
+/* Re-run bind + configure reporting for every saved device endpoint. */
+void zb_device_mgr_reconfigure_reporting(void);
+
 void zb_device_mgr_set_online(uint64_t ieee, bool online);
 void zb_device_mgr_touch_last_seen(uint64_t ieee);
 bool zb_device_mgr_is_online(uint64_t ieee);

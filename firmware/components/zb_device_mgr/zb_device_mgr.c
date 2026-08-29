@@ -15,6 +15,8 @@
 #include "zdo/esp_zigbee_zdo_command.h"
 #include "zcl/esp_zigbee_zcl_command.h"
 #include "zcl/esp_zigbee_zcl_common.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "zb_device_mgr";
 
@@ -33,12 +35,16 @@ static zb_interview_ctx_t s_interview_ctx = {0};
 #define ZB_LIVENESS_NS  "zb_liveness"
 #define ZB_LIVENESS_KEY "liveness_table"
 
+/* Persist the liveness table at most this often; see zb_device_mgr_touch_last_seen. */
+#define ZB_LIVENESS_PERSIST_PERIOD_MS 60000
+
 typedef struct {
 	bool    online;
 	int64_t last_seen_ms;
 } zb_liveness_entry_t;
 
 static zb_liveness_entry_t s_liveness_table[ZB_MAX_DEVICES];
+static int64_t s_liveness_last_persist_ms = 0;
 
 static int s_find_device_index(uint64_t ieee)
 {
@@ -574,12 +580,51 @@ esp_err_t zb_device_mgr_load(void)
 	return err;
 }
 
+void zb_device_mgr_reconfigure_reporting(void)
+{
+	/*
+	 * Devices already on the network keep the reporting configuration they
+	 * were given at join time. After a firmware update changes the policy,
+	 * re-run bind + configure reporting for every saved endpoint so they
+	 * pick it up without a re-pair.
+	 */
+	uint8_t count = 0;
+
+	for (int i = 0; i < ZB_MAX_DEVICES; i++) {
+		zb_device_record_t rec;
+
+		xSemaphoreTake(s_mutex, portMAX_DELAY);
+		if (s_device_table[i].ieee_addr == 0ULL) {
+			xSemaphoreGive(s_mutex);
+			continue;
+		}
+		memcpy(&rec, &s_device_table[i], sizeof(rec));
+		xSemaphoreGive(s_mutex);
+
+		for (uint8_t e = 0; e < rec.endpoint_count; e++) {
+			const zb_endpoint_info_t *ep = &rec.endpoints[e];
+			for (uint8_t c = 0; c < ep->cluster_count; c++) {
+				s_configure_cluster_reports(rec.network_addr,
+							    rec.ieee_addr,
+							    ep->ep_id,
+							    ep->clusters[c]);
+				/* Pace the burst: a dozen-plus APS frames back to
+				 * back can exhaust the stack's buffer pool. */
+				vTaskDelay(pdMS_TO_TICKS(150));
+			}
+		}
+		count++;
+	}
+	ESP_LOGI(TAG, "Reporting reconfigured for %d saved device(s)", count);
+}
+
 void zb_device_mgr_set_online(uint64_t ieee, bool online)
 {
 	xSemaphoreTake(s_mutex, portMAX_DELAY);
 	int idx = s_find_device_index(ieee);
 	if (idx >= 0) {
 		s_liveness_table[idx].online = online;
+		s_liveness_last_persist_ms = esp_timer_get_time() / 1000;
 		s_save_liveness();
 	}
 	xSemaphoreGive(s_mutex);
@@ -587,12 +632,23 @@ void zb_device_mgr_set_online(uint64_t ieee, bool online)
 
 void zb_device_mgr_touch_last_seen(uint64_t ieee)
 {
+	int64_t now_ms = esp_timer_get_time() / 1000;
+
 	xSemaphoreTake(s_mutex, portMAX_DELAY);
 	int idx = s_find_device_index(ieee);
 	if (idx >= 0) {
 		s_liveness_table[idx].online = true;
-		s_liveness_table[idx].last_seen_ms = esp_timer_get_time() / 1000;
-		s_save_liveness();
+		s_liveness_table[idx].last_seen_ms = now_ms;
+		/*
+		 * Flash commit per report (several per second per device) runs in
+		 * the Zigbee task context and wears the NVS partition. The in-memory
+		 * table is authoritative while running; persist periodically.
+		 */
+		if (now_ms - s_liveness_last_persist_ms >=
+			    ZB_LIVENESS_PERSIST_PERIOD_MS) {
+			s_liveness_last_persist_ms = now_ms;
+			s_save_liveness();
+		}
 	}
 	xSemaphoreGive(s_mutex);
 }

@@ -2,6 +2,8 @@
 #include <string.h>
 #include "esp_log.h"
 #include "esp_event.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "nvs_storage.h"
 #include "hub_config.h"
@@ -13,6 +15,23 @@
 #include "serial_api.h"
 
 static const char *TAG = "main";
+
+/* Reporting policy may change between firmware builds; re-push it to every
+ * saved device once the network is up so they do not need a re-pair. */
+static void reporting_reconfig_task(void *arg)
+{
+	(void)arg;
+
+	if (!zb_stack_wait_network_ready(30000)) {
+		ESP_LOGW(TAG, "Network not ready in 30 s, skipping reporting reconfig");
+		vTaskDelete(NULL);
+		return;
+	}
+	/* Give the network a moment to settle before the ZCL burst. */
+	vTaskDelay(pdMS_TO_TICKS(2000));
+	zb_device_mgr_reconfigure_reporting();
+	vTaskDelete(NULL);
+}
 
 static void on_attribute_report(uint16_t short_addr, uint64_t ieee_addr,
                                 uint8_t endpoint, uint16_t cluster_id,
@@ -88,7 +107,9 @@ static void on_read_attr_resp(uint16_t short_addr, uint64_t ieee_addr,
 
 void app_main(void)
 {
-	esp_log_level_set("*", ESP_LOG_ERROR);
+	/* JSON lines are newline-framed, so console logs cannot corrupt the
+	 * host protocol anymore; keep stack visibility for diagnostics. */
+	esp_log_level_set("*", ESP_LOG_INFO);
 	ESP_LOGI(TAG, "Starting Zigbee HUB application...");
 
 	ESP_ERROR_CHECK(nvs_storage_init());
@@ -106,6 +127,12 @@ void app_main(void)
 				    on_read_attr_resp);
 
 	ESP_ERROR_CHECK(serial_api_init());
+
+	BaseType_t ret = xTaskCreate(reporting_reconfig_task, "zb_reconfig",
+				     8192, NULL, 4, NULL);
+	if (ret != pdPASS) {
+		ESP_LOGW(TAG, "Failed to start reporting reconfig task");
+	}
 
 	ESP_LOGI(TAG, "Zigbee HUB fully initialized");
 }

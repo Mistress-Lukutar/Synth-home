@@ -220,7 +220,8 @@ esp_err_t zb_cluster_send_level(uint64_t ieee, uint8_t level,
 	}
 
 	zb_cmd_tracker_commit(slot, corr_id, ieee, ep->ep_id, 0x0008, 0x0000,
-			      true, true, level, ZB_CMD_TRACKER_TIMEOUT_MS);
+			      true, true, level,
+			      ZB_CMD_TRACKER_TIMEOUT_TRANSITION_MS);
 	return ESP_OK;
 }
 
@@ -272,7 +273,8 @@ esp_err_t zb_cluster_send_color_hs(uint64_t ieee, uint8_t hue, uint8_t sat,
 	}
 
 	zb_cmd_tracker_commit(slot, corr_id, ieee, ep->ep_id, 0x0300, 0x0000,
-			      true, true, hue, ZB_CMD_TRACKER_TIMEOUT_MS);
+			      true, true, hue,
+			      ZB_CMD_TRACKER_TIMEOUT_TRANSITION_MS);
 	return ESP_OK;
 }
 
@@ -324,7 +326,7 @@ esp_err_t zb_cluster_send_color_xy(uint64_t ieee, uint16_t x, uint16_t y,
 	}
 
 	zb_cmd_tracker_commit(slot, corr_id, ieee, ep->ep_id, 0x0300, 0x0003,
-			      true, true, x, ZB_CMD_TRACKER_TIMEOUT_MS);
+			      true, true, x, ZB_CMD_TRACKER_TIMEOUT_TRANSITION_MS);
 	return ESP_OK;
 }
 
@@ -375,7 +377,8 @@ esp_err_t zb_cluster_send_color_ct(uint64_t ieee, uint16_t mireds,
 	}
 
 	zb_cmd_tracker_commit(slot, corr_id, ieee, ep->ep_id, 0x0300, 0x0007,
-			      true, true, mireds, ZB_CMD_TRACKER_TIMEOUT_MS);
+			      true, true, mireds,
+			      ZB_CMD_TRACKER_TIMEOUT_TRANSITION_MS);
 	return ESP_OK;
 }
 
@@ -511,20 +514,60 @@ esp_err_t zb_cluster_send_configure_reporting(uint16_t network_addr, uint8_t ep_
                                               uint16_t cluster_id, uint16_t attr_id,
                                               uint8_t attr_type)
 {
-	uint8_t reportable_u8 = 1;
-	uint16_t reportable_u16 = 1;
-	void *reportable_change = &reportable_u8;
+	uint8_t reportable_u8;
+	uint16_t reportable_u16;
+	void *reportable_change;
 
-	if (attr_type == ESP_ZB_ZCL_ATTR_TYPE_U16) {
-		reportable_change = &reportable_u16;
+	/*
+	 * Reporting policy: push changes at most once per second, refresh at most
+	 * hourly, and only when the value moved by a meaningful delta. The previous
+	 * config (min=0, max=1, delta=1) made mains-powered dimmers re-send every
+	 * attribute every second even when nothing changed, flooding the pipeline
+	 * and wearing the NVS liveness writes.
+	 */
+	uint16_t min_interval = 1;
+	uint16_t max_interval = 3600;
+
+	switch (cluster_id) {
+	case 0x0006:
+		/* OnOff: discrete, no reportable change. */
+		reportable_u8 = 1;
+		reportable_change = &reportable_u8;
+		break;
+	case 0x0008:
+		reportable_u8 = 5; /* CurrentLevel 0..255 */
+		reportable_change = &reportable_u8;
+		break;
+	case 0x0300:
+		switch (attr_id) {
+		case 0x0003:
+		case 0x0004:
+			reportable_u16 = 16; /* x/y 0..65535 */
+			reportable_change = &reportable_u16;
+			break;
+		case 0x0007:
+			reportable_u16 = 10; /* color temp mireds */
+			reportable_change = &reportable_u16;
+			break;
+		default:
+			/* Hue/Sat/ColorMode (u8). */
+			reportable_u8 = 5;
+			reportable_change = &reportable_u8;
+			break;
+		}
+		break;
+	default:
+		reportable_u8 = 1;
+		reportable_change = &reportable_u8;
+		break;
 	}
 
 	esp_zb_zcl_config_report_record_t record = {
 		.direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
 		.attributeID = attr_id,
 		.attrType = attr_type,
-		.min_interval = 0,
-		.max_interval = 1,
+		.min_interval = min_interval,
+		.max_interval = max_interval,
 		.reportable_change = reportable_change,
 	};
 
