@@ -17,6 +17,7 @@ esp_err_t zb_cluster_read_attr(uint64_t ieee, uint8_t ep_id, uint16_t cluster_id
 #define ZB_CMD_TRACKER_SLOTS 32
 #define ZB_CMD_TRACKER_CHECK_MS 1000
 #define ZB_CMD_TRACKER_PROBE_MS 400
+#define ZB_CMD_TRACKER_PROBE_RETRY_MS 1500
 
 typedef struct {
 	bool active;
@@ -101,6 +102,24 @@ static void probe_timer_cb(void *arg)
 	uint8_t endpoint = slot->endpoint;
 	uint16_t cluster_id = slot->cluster_id;
 	uint16_t attr_id = slot->probe_attr_id;
+
+	/*
+	 * Keep probing until the slot resolves or expires. Dimmers ramp to the
+	 * target and the device reporting engine may swallow the settled value
+	 * (min reporting interval), so this read-back is what guarantees the
+	 * final level reaches the host instead of a mid-ramp intermediate one.
+	 * Re-arm before the read: a report that resolves the slot while the
+	 * read is in flight simply makes the next callback a no-op.
+	 */
+	if (slot->probe_timer != NULL) {
+		esp_err_t arm_err = esp_timer_start_once(
+			slot->probe_timer,
+			(uint64_t)ZB_CMD_TRACKER_PROBE_RETRY_MS * 1000ULL);
+		if (arm_err != ESP_OK) {
+			ESP_LOGW(TAG, "Failed to re-arm probe timer: %s",
+				 esp_err_to_name(arm_err));
+		}
+	}
 	xSemaphoreGive(s_mutex);
 
 	esp_err_t err = zb_cluster_read_attr(ieee, endpoint, cluster_id, attr_id,
