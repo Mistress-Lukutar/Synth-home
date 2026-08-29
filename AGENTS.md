@@ -2,7 +2,7 @@
 
 ## Firmware Project Details
 
-The firmware is an **ESP-IDF 5.5.1** project targeting **ESP32-C6**.
+The firmware is an **ESP-IDF v6.0.2** project targeting **ESP32-C6**.
 
 ### Actual Directory Layout
 ```
@@ -61,48 +61,70 @@ idf_component_register(
 
 ### Build Commands
 
-#### Linux/macOS (Standard)
-```bash
-cd firmware
-idf.py set-target esp32c6
-idf.py build
-idf.py flash monitor
-```
+**The only supported way to build and flash this project on Windows is the
+`firmware/build_and_flash.ps1` script** (adapted from the SensorHUB project).
+It activates the ESP-IDF environment itself — no manual environment setup is
+required or allowed.
 
-#### Windows (ESP-IDF 5.5.1 with ESP-IDE)
-When using ESP-IDF installed via ESP-IDE without the full environment setup, use PowerShell with explicit environment variables:
+> **Rule for AI agents:** if `build_and_flash.ps1` fails, **stop immediately
+> and report the failure to the user**. Do NOT look for workarounds: no manual
+> `PATH`/`IDF_PATH` setup, no raw `idf.py` invocation with hand-crafted
+> environment variables, no alternative toolchains. Show the error output and
+> wait for the user's instructions.
+
+Requires **ESP-IDF v6.0.2** installed. The project targets **ESP32-C6**.
+
+### Script paths (auto-configured, overridable via parameters)
+
+| Parameter | Default value |
+|-----------|---------------|
+| `-IdfPath` | `C:\esp\v6.0.2\esp-idf` |
+| `-IdfToolsPath` | `C:\Espressif` |
+| `-PythonEnvPath` | `C:\Espressif\tools\python\v6.0.2\venv` |
+| `-Port` | `COM3` (USB Serial JTAG) |
+
+### Usage
 
 ```powershell
-$env:IDF_PATH = "C:\Espressif\frameworks\esp-idf-v5.5.1"
-$env:IDF_PYTHON_ENV_PATH = "C:\Espressif\python_env\idf5.5_py3.11_env"
-$env:ESP_ROM_ELF_DIR = "C:\Espressif\tools\esp-rom-elfs\20241011"
-$env:PATH = "C:\Espressif\python_env\idf5.5_py3.11_env\Scripts;" +
-            "C:\Espressif\tools\riscv32-esp-elf\esp-14.2.0_20241119\riscv32-esp-elf\bin;" +
-            "C:\Espressif\tools\cmake\3.30.2\bin;" +
-            "C:\Espressif\tools\ninja\1.12.1;" +
-            "C:\Espressif\frameworks\esp-idf-v5.5.1\tools;" +
-            $env:PATH
+# Build only
+.\build_and_flash.ps1 -BuildOnly
 
-cd C:\_Source\ZigbeeHUB\firmware
-python C:\Espressif\frameworks\esp-idf-v5.5.1\tools\idf.py set-target esp32c6
-python C:\Espressif\frameworks\esp-idf-v5.5.1\tools\idf.py build
+# Clean build
+.\build_and_flash.ps1 -BuildOnly -Clean
+
+# Build and flash to COM3 (default port)
+.\build_and_flash.ps1
+
+# Build, flash, and open the serial monitor
+.\build_and_flash.ps1 -Monitor
 ```
 
-**Required Environment Variables:**
-| Variable | Typical Value |
-|----------|---------------|
-| `IDF_PATH` | `C:\Espressif\frameworks\esp-idf-v5.5.1` |
-| `IDF_PYTHON_ENV_PATH` | `C:\Espressif\python_env\idf5.5_py3.11_env` |
-| `ESP_ROM_ELF_DIR` | `C:\Espressif\tools\esp-rom-elfs\20241011` |
+> **Note:** The preferred way is to run the script from a native PowerShell
+> prompt as shown above. It can also be invoked from Git Bash / MSYS2 / MinGW
+> or from agent shells via `powershell.exe`:
+> ```bash
+> powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\_Source\ZigbeeHUB\firmware\build_and_flash.ps1" -BuildOnly
+> ```
+> The script automatically strips the `MSYSTEM` environment variable from its
+> process environment so ESP-IDF can activate.
 
-#### Flash Commands
+### Linux / macOS (reference only)
+
+The helper script is Windows-only. On other systems use the standard ESP-IDF
+flow:
+
 ```bash
-# Standard flash (run from firmware/ directory)
-idf.py -p PORT flash
-
-# Or using esptool directly
-python -m esptool --chip esp32c6 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 4MB --flash_freq 80m 0x0 build/bootloader/bootloader.bin 0x8000 build/partition_table/partition-table.bin 0x10000 build/zigbee_hub.bin
+. $IDF_PATH/export.sh          # activate environment (run first)
+idf.py set-target esp32c6      # once per project
+idf.py build                   # build
+idf.py -p /dev/ttyUSB0 flash   # flash
+idf.py monitor                 # serial monitor
+idf.py fullclean               # clean build artifacts
 ```
+
+> **Important:** the target chip is flashed and controlled over the same
+> **USB Serial JTAG on COM3** that the WebUI server uses for the JSON protocol.
+> Stop the WebUI server before flashing, and restart it afterwards.
 
 ## Naming Conventions
 
@@ -127,8 +149,8 @@ The WebUI uses a single authority for persisted device state.
 - **Firmware protocol contract:**
   - `state_change` events carry actual attribute values and are the only events that update `Device.state`.
   - `*_ack` events (`on_ack`, `off_ack`, `read_attr_ack`, …) contain only `ok`/`error` and report whether the firmware accepted the command. They must **not** be used to update state.
-  - `command_status` events report delivery/completion/timeout and may update `Device.online`, but must **not** update `Device.state`.
-- **Command lifecycle:** `HubService.send_command` registers each command in `DeviceStateManager`. The pending command is resolved when a matching `state_change` arrives or when `command_status` reports a terminal status.
+  - `command_status` events report delivery/completion/timeout and may mark a device online on `delivered`/`completed`, but must **not** mark it offline on `timeout`/`failed` (liveness belongs to pings and `state_change`) and must **not** update `Device.state`.
+- **Command lifecycle:** `HubService.send_command` registers each command in `DeviceStateManager`. The pending command is resolved when a matching `state_change` arrives or when `command_status` reports a terminal status; unresolved entries are reaped after a TTL (see `DeviceStateManager.sweep_expired`).
 - **Automation:** graph node executors send commands through `HubService` and read state from the in-memory cache (`HubService.get_cached_devices()`). They never write to the database directly.
 - **Frontend:** the UI reflects pending commands via `pendingCommands`, but it only mutates `device.state` on `state_change` events.
 
