@@ -15,6 +15,7 @@ logger = structlog.get_logger(__name__)
 
 PING_INTERVAL_SECONDS = 30
 PING_TIMEOUT_SECONDS = 3.0
+PENDING_COMMAND_TTL_SECONDS = 60
 
 
 class HubService:
@@ -143,7 +144,13 @@ class HubService:
     async def fetch_devices(self) -> List[Dict[str, Any]]:
         if not self.is_connected():
             raise HubConnectionError()
-        devices = await self._client.fetch_devices()
+        try:
+            devices = await self._client.fetch_devices()
+        except Exception:
+            # Serial write failed mid-recovery; the reader will restore the
+            # link. Report "no data" so callers fall back to cached/DB state.
+            logger.exception("fetch_devices_send_failed")
+            return []
         if not devices:
             logger.warning("fetch_devices_empty_or_timeout")
         else:
@@ -367,7 +374,12 @@ class HubService:
             self._ping_task.cancel()
 
     async def _ping_loop(self) -> None:
-        """Periodically ping all known devices to detect offline state."""
+        """Periodically ping all known devices to detect offline state.
+
+        The loop survives transient serial outages: HubClient recovers the
+        port on its own, so a down cycle is skipped, not fatal. Only a user
+        disconnect (stop event) or task cancellation ends the loop.
+        """
         try:
             while not self._stop_ping.is_set():
                 try:
@@ -376,9 +388,21 @@ class HubService:
                     )
                 except asyncio.TimeoutError:
                     pass
-                if self._stop_ping.is_set() or not self.is_connected():
+                if self._stop_ping.is_set():
                     break
-                await self._ping_all_devices()
+                if not self.is_connected():
+                    logger.info("ping_cycle_skipped_not_connected")
+                    continue
+                try:
+                    # Drop pending commands whose firmware event was lost.
+                    expired = self._state_manager.sweep_expired(
+                        PENDING_COMMAND_TTL_SECONDS
+                    )
+                    if expired:
+                        logger.info("pending_commands_swept", count=expired)
+                    await self._ping_all_devices()
+                except Exception:
+                    logger.exception("ping_cycle_failed")
         except asyncio.CancelledError:
             logger.debug("ping_loop_cancelled")
         except Exception:
@@ -387,9 +411,17 @@ class HubService:
     async def ping_device(self, ieee: str) -> Dict[str, Any]:
         """Send a single liveness ping to a device and track the result."""
         correlation_id = self._new_correlation_id()
-        result = await self._client.ping(ieee, correlation_id)
-        self._spawn_background(self._wait_ping_result(ieee, correlation_id))
-        return result
+        # Register the response future BEFORE sending: a fast reply would
+        # otherwise be dropped by the protocol handler and look like a timeout.
+        future = self._register_ping_future(correlation_id)
+        try:
+            await self._client.ping(ieee, correlation_id)
+        except Exception:
+            logger.exception("ping_send_failed", ieee=ieee)
+            self._client._protocol._resolve_future(correlation_id, {})
+            raise
+        self._spawn_background(self._wait_ping_result(ieee, correlation_id, future))
+        return {"correlation_id": correlation_id, "status": "pending"}
 
     async def _ping_all_devices(self) -> None:
         """Send a ping to every cached device and update liveness state."""
@@ -402,23 +434,30 @@ class HubService:
             if not ieee:
                 continue
             try:
-                result = await self._client.ping(ieee, self._new_correlation_id())
-                correlation_id = result.get("correlation_id")
-                if correlation_id:
-                    self._spawn_background(
-                        self._wait_ping_result(ieee, correlation_id)
-                    )
+                correlation_id = self._new_correlation_id()
+                # Register the response future BEFORE sending (see ping_device).
+                future = self._register_ping_future(correlation_id)
+                await self._client.ping(ieee, correlation_id)
+                self._spawn_background(
+                    self._wait_ping_result(ieee, correlation_id, future)
+                )
             except Exception:
                 logger.exception("ping_send_failed", ieee=ieee)
             # Stagger pings so the Zigbee network is not flooded.
             if i < len(devices) - 1:
                 await asyncio.sleep(0.5)
 
-    async def _wait_ping_result(self, ieee: str, correlation_id: str) -> None:
-        """Wait for the firmware ping_result event and update the DB."""
+    def _register_ping_future(self, correlation_id: str) -> asyncio.Future:
+        """Create and register the future that the ping reply will resolve."""
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         self._client._protocol.register_future(correlation_id, future)
+        return future
+
+    async def _wait_ping_result(
+        self, ieee: str, correlation_id: str, future: asyncio.Future
+    ) -> None:
+        """Wait for the firmware ping_result event and update the DB."""
         try:
             data = await asyncio.wait_for(future, timeout=PING_TIMEOUT_SECONDS)
             status = data.get("status")
