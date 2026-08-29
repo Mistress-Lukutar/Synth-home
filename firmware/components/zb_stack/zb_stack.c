@@ -12,6 +12,7 @@
 #include "string.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/event_groups.h"
 #include "zb_cmd_tracker.h"
 
 static const char *TAG = "zb_stack";
@@ -22,6 +23,9 @@ static const char *TAG = "zb_stack";
 #define ZB_NET_KEY_BLOB          "net_key"
 #define ZB_NET_PANID_KEY         "pan_id"
 #define ZB_NET_CHANNEL_KEY       "channel"
+#define ZB_STACK_NET_READY_BIT   BIT0
+
+static EventGroupHandle_t s_events = NULL;
 
 static zb_stack_device_join_cb_t      s_join_cb   = NULL;
 static zb_stack_device_leave_cb_t     s_leave_cb  = NULL;
@@ -279,6 +283,9 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
     case ESP_ZB_BDB_SIGNAL_STEERING:
         if (err_status == ESP_OK) {
             ESP_LOGI(TAG, "Network steering started");
+            if (s_events) {
+                xEventGroupSetBits(s_events, ZB_STACK_NET_READY_BIT);
+            }
         } else {
             ESP_LOGW(TAG, "Network steering failed (status: %s), retrying",
                      esp_err_to_name(err_status));
@@ -383,6 +390,33 @@ static void zb_stack_task(void *pvParameters)
     esp_zb_cluster_list_add_basic_cluster(cluster_list, basic_cluster,
                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
+    /*
+     * esp-zigbee-lib 2.x requires the originating endpoint to carry client
+     * cluster descriptors for outgoing ZCL commands (reads, writes, cluster
+     * commands). Without them every esp_zb_zcl_*_cmd_req fails instantly.
+     */
+    esp_zb_attribute_list_t *basic_client = esp_zb_basic_cluster_create(NULL);
+    if (basic_client != NULL) {
+        esp_zb_cluster_list_add_basic_cluster(cluster_list, basic_client,
+                                              ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+    }
+    esp_zb_attribute_list_t *on_off_client = esp_zb_on_off_cluster_create(NULL);
+    if (on_off_client != NULL) {
+        esp_zb_cluster_list_add_on_off_cluster(cluster_list, on_off_client,
+                                               ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+    }
+    esp_zb_attribute_list_t *level_client = esp_zb_level_cluster_create(NULL);
+    if (level_client != NULL) {
+        esp_zb_cluster_list_add_level_cluster(cluster_list, level_client,
+                                              ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+    }
+    esp_zb_attribute_list_t *color_client =
+        esp_zb_color_control_cluster_create(NULL);
+    if (color_client != NULL) {
+        esp_zb_cluster_list_add_color_control_cluster(cluster_list, color_client,
+                                                      ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+    }
+
     esp_zb_ep_list_t *ep_list = esp_zb_ep_list_create();
     esp_zb_endpoint_config_t ep_config = {
         .endpoint = ZB_STACK_ENDPOINT,
@@ -416,11 +450,29 @@ esp_err_t zb_stack_init(void)
     ESP_RETURN_ON_ERROR(esp_zb_platform_config(&config), TAG,
                         "Failed to set Zigbee platform config");
 
-    BaseType_t ret = xTaskCreate(zb_stack_task, "zb_stack", 8192, NULL, 5, NULL);
+    if (s_events == NULL) {
+        s_events = xEventGroupCreate();
+        ESP_RETURN_ON_FALSE(s_events != NULL, ESP_ERR_NO_MEM, TAG,
+                            "Failed to create event group");
+    }
+
+    /* esp-zigbee-lib 2.x on IDF 6.0 needs a deeper ZBOSS task stack. */
+    BaseType_t ret = xTaskCreate(zb_stack_task, "zb_stack", 16384, NULL, 5, NULL);
     ESP_RETURN_ON_FALSE(ret == pdPASS, ESP_FAIL, TAG,
                         "Failed to create Zigbee task");
 
     return ESP_OK;
+}
+
+bool zb_stack_wait_network_ready(uint32_t timeout_ms)
+{
+    if (s_events == NULL) {
+        return false;
+    }
+    EventBits_t bits = xEventGroupWaitBits(s_events, ZB_STACK_NET_READY_BIT,
+                                           pdFALSE, pdTRUE,
+                                           pdMS_TO_TICKS(timeout_ms));
+    return (bits & ZB_STACK_NET_READY_BIT) != 0;
 }
 
 esp_err_t zb_stack_start_network(void)
