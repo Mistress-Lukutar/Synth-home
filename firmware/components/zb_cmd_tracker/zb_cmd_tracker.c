@@ -9,24 +9,35 @@
 #include "esp_log.h"
 #include "com_pipeline.h"
 
+/* Forward declaration - implemented by the zb_clusters component. */
+esp_err_t zb_cluster_read_attr(uint64_t ieee, uint8_t ep_id, uint16_t cluster_id,
+                               uint16_t attr_id, const char *corr_id);
+
 #define TAG "zb_cmd_tracker"
 #define ZB_CMD_TRACKER_SLOTS 32
 #define ZB_CMD_TRACKER_CHECK_MS 1000
+#define ZB_CMD_TRACKER_PROBE_MS 400
 
 typedef struct {
 	bool active;
 	bool reserved;          /* slot reserved but not yet committed */
 	char corr_id[COM_CORR_ID_LEN];
 	uint64_t ieee;
+	uint8_t endpoint;
 	uint16_t cluster_id;
 	uint16_t attr_id;       /* 0xFFFF = any attr */
+	uint16_t probe_attr_id; /* attribute used for read-after-write probe */
 	bool check_value;
 	uint32_t expected_val;
 	int64_t deadline_ms;
+	esp_timer_handle_t probe_timer;
+	uint32_t nonce;
+	uint32_t probe_nonce;
 } slot_t;
 
 static slot_t s_slots[ZB_CMD_TRACKER_SLOTS];
 static SemaphoreHandle_t s_mutex = NULL;
+static uint32_t s_next_nonce = 1;
 
 static void emit_status(const char *corr_id, com_cmd_status_t status, const char *reason,
 			uint64_t ieee, uint16_t cluster)
@@ -67,6 +78,38 @@ static uint32_t extract_u32(const void *value, uint8_t type)
 	}
 }
 
+static void clear_probe_timer_locked(int slot)
+{
+	if (s_slots[slot].probe_timer != NULL) {
+		esp_timer_stop(s_slots[slot].probe_timer);
+		esp_timer_delete(s_slots[slot].probe_timer);
+		s_slots[slot].probe_timer = NULL;
+		s_slots[slot].probe_nonce = 0;
+	}
+}
+
+static void probe_timer_cb(void *arg)
+{
+	slot_t *slot = (slot_t *)arg;
+
+	xSemaphoreTake(s_mutex, portMAX_DELAY);
+	if (!slot->active || slot->reserved || slot->nonce != slot->probe_nonce) {
+		xSemaphoreGive(s_mutex);
+		return;
+	}
+	uint64_t ieee = slot->ieee;
+	uint8_t endpoint = slot->endpoint;
+	uint16_t cluster_id = slot->cluster_id;
+	uint16_t attr_id = slot->probe_attr_id;
+	xSemaphoreGive(s_mutex);
+
+	esp_err_t err = zb_cluster_read_attr(ieee, endpoint, cluster_id, attr_id,
+					     "probe");
+	if (err != ESP_OK) {
+		ESP_LOGW(TAG, "Probe read attr failed: %s", esp_err_to_name(err));
+	}
+}
+
 static void tracker_task(void *arg)
 {
 	(void)arg;
@@ -78,6 +121,7 @@ static void tracker_task(void *arg)
 			if (s_slots[i].active && !s_slots[i].reserved && now >= s_slots[i].deadline_ms) {
 				emit_status(s_slots[i].corr_id, CMD_STATUS_TIMEOUT, "no_response",
 					    s_slots[i].ieee, s_slots[i].cluster_id);
+				clear_probe_timer_locked(i);
 				s_slots[i].active = false;
 			}
 		}
@@ -116,8 +160,8 @@ static int reserve_locked(void)
 }
 
 static void commit_locked(int slot, const char *corr_id, uint64_t ieee,
-                          uint16_t cluster_id, uint16_t attr_id,
-                          bool check_value, uint32_t expected_val,
+                          uint8_t endpoint, uint16_t cluster_id, uint16_t attr_id,
+                          bool is_write, bool check_value, uint32_t expected_val,
                           uint32_t timeout_ms)
 {
 	if (slot < 0 || slot >= ZB_CMD_TRACKER_SLOTS) {
@@ -129,12 +173,55 @@ static void commit_locked(int slot, const char *corr_id, uint64_t ieee,
 	strncpy(s_slots[slot].corr_id, corr_id, COM_CORR_ID_LEN - 1);
 	s_slots[slot].corr_id[COM_CORR_ID_LEN - 1] = '\0';
 	s_slots[slot].ieee = ieee;
+	s_slots[slot].endpoint = endpoint;
 	s_slots[slot].cluster_id = cluster_id;
 	s_slots[slot].attr_id = attr_id;
+	if (attr_id != 0xFFFF) {
+		s_slots[slot].probe_attr_id = attr_id;
+	} else {
+		/* For "any attribute" matches (e.g. toggle) pick a sensible default
+		 * to read after writing. */
+		switch (cluster_id) {
+		case 0x0008:
+			s_slots[slot].probe_attr_id = 0x0000; /* CurrentLevel */
+			break;
+		case 0x0300:
+			s_slots[slot].probe_attr_id = 0x0008; /* ColorMode */
+			break;
+		case 0x0006:
+		default:
+			s_slots[slot].probe_attr_id = 0x0000; /* OnOff */
+			break;
+		}
+	}
 	s_slots[slot].check_value = check_value;
 	s_slots[slot].expected_val = expected_val;
 	s_slots[slot].deadline_ms = (esp_timer_get_time() / 1000) + timeout_ms;
 	s_slots[slot].reserved = false;
+	s_slots[slot].nonce = s_next_nonce++;
+	if (s_next_nonce == 0) {
+		s_next_nonce = 1;
+	}
+
+	if (is_write) {
+		esp_timer_create_args_t timer_args = {
+			.callback = probe_timer_cb,
+			.arg = &s_slots[slot],
+			.name = "cmd_probe",
+		};
+		s_slots[slot].probe_nonce = s_slots[slot].nonce;
+		if (esp_timer_create(&timer_args,
+				     &s_slots[slot].probe_timer) != ESP_OK ||
+		    esp_timer_start_once(s_slots[slot].probe_timer,
+					 (uint64_t)ZB_CMD_TRACKER_PROBE_MS * 1000ULL) != ESP_OK) {
+			ESP_LOGW(TAG, "Failed to start probe timer for slot %d", slot);
+			if (s_slots[slot].probe_timer != NULL) {
+				esp_timer_delete(s_slots[slot].probe_timer);
+				s_slots[slot].probe_timer = NULL;
+			}
+			s_slots[slot].probe_nonce = 0;
+		}
+	}
 }
 
 static void release_locked(int slot)
@@ -143,13 +230,15 @@ static void release_locked(int slot)
 		return;
 	}
 	if (s_slots[slot].active && s_slots[slot].reserved) {
+		clear_probe_timer_locked(slot);
 		s_slots[slot].active = false;
 		s_slots[slot].reserved = false;
 	}
 }
 
 esp_err_t zb_cmd_tracker_register(const char *corr_id, uint64_t ieee,
-                                  uint16_t cluster_id, uint16_t attr_id,
+                                  uint8_t endpoint, uint16_t cluster_id,
+                                  uint16_t attr_id, bool is_write,
                                   bool check_value, uint32_t expected_val,
                                   uint32_t timeout_ms)
 {
@@ -162,8 +251,8 @@ esp_err_t zb_cmd_tracker_register(const char *corr_id, uint64_t ieee,
 		xSemaphoreGive(s_mutex);
 		return ESP_ERR_NO_MEM;
 	}
-	commit_locked(slot, corr_id, ieee, cluster_id, attr_id,
-		      check_value, expected_val, timeout_ms);
+	commit_locked(slot, corr_id, ieee, endpoint, cluster_id, attr_id,
+		      is_write, check_value, expected_val, timeout_ms);
 	xSemaphoreGive(s_mutex);
 	return ESP_OK;
 }
@@ -180,16 +269,16 @@ int zb_cmd_tracker_reserve(void)
 }
 
 void zb_cmd_tracker_commit(int slot, const char *corr_id, uint64_t ieee,
-                           uint16_t cluster_id, uint16_t attr_id,
-                           bool check_value, uint32_t expected_val,
-                           uint32_t timeout_ms)
+                           uint8_t endpoint, uint16_t cluster_id,
+                           uint16_t attr_id, bool is_write, bool check_value,
+                           uint32_t expected_val, uint32_t timeout_ms)
 {
 	if (!corr_id || !s_mutex) {
 		return;
 	}
 	xSemaphoreTake(s_mutex, portMAX_DELAY);
-	commit_locked(slot, corr_id, ieee, cluster_id, attr_id,
-		      check_value, expected_val, timeout_ms);
+	commit_locked(slot, corr_id, ieee, endpoint, cluster_id, attr_id,
+		      is_write, check_value, expected_val, timeout_ms);
 	xSemaphoreGive(s_mutex);
 }
 
@@ -229,6 +318,7 @@ void zb_cmd_tracker_on_report(uint64_t ieee, uint16_t cluster_id, uint16_t attr_
 		}
 		emit_status(s_slots[i].corr_id, CMD_STATUS_COMPLETED, NULL,
 			    ieee, cluster_id);
+		clear_probe_timer_locked(i);
 		s_slots[i].active = false;
 	}
 	xSemaphoreGive(s_mutex);
@@ -258,6 +348,7 @@ void zb_cmd_tracker_on_default_resp(uint64_t ieee, uint16_t cluster_id,
 		} else {
 			emit_status(s_slots[i].corr_id, CMD_STATUS_FAILED,
 				    "zcl_error", ieee, cluster_id);
+			clear_probe_timer_locked(i);
 			s_slots[i].active = false;
 		}
 	}

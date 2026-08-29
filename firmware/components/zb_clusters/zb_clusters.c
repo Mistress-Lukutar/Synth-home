@@ -7,6 +7,7 @@
 #include "zb_cmd_tracker.h"
 #include "esp_zigbee_core.h"
 #include "zcl/esp_zigbee_zcl_command.h"
+#include "zdo/esp_zigbee_zdo_command.h"
 
 static const char *TAG = "zb_clusters";
 
@@ -161,11 +162,13 @@ esp_err_t zb_cluster_send_on_off(uint64_t ieee, uint8_t cmd_id,
 	bool on = (cmd_id == ZB_CMD_ON_OFF_ON);
 	bool off = (cmd_id == ZB_CMD_ON_OFF_OFF);
 	if (on || off) {
-		zb_cmd_tracker_commit(slot, corr_id, ieee, 0x0006, 0x0000, true,
-				      on ? 1U : 0U, ZB_CMD_TRACKER_TIMEOUT_MS);
+		zb_cmd_tracker_commit(slot, corr_id, ieee, ep->ep_id, 0x0006, 0x0000,
+				      true, true, on ? 1U : 0U,
+				      ZB_CMD_TRACKER_TIMEOUT_MS);
 	} else {
-		zb_cmd_tracker_commit(slot, corr_id, ieee, 0x0006, 0xFFFF, false,
-				      0, ZB_CMD_TRACKER_TIMEOUT_MS);
+		zb_cmd_tracker_commit(slot, corr_id, ieee, ep->ep_id, 0x0006, 0xFFFF,
+				      true, false, 0,
+				      ZB_CMD_TRACKER_TIMEOUT_MS);
 	}
 	return ESP_OK;
 }
@@ -216,8 +219,8 @@ esp_err_t zb_cluster_send_level(uint64_t ieee, uint8_t level,
 		return ESP_FAIL;
 	}
 
-	zb_cmd_tracker_commit(slot, corr_id, ieee, 0x0008, 0x0000, true,
-			      level, ZB_CMD_TRACKER_TIMEOUT_MS);
+	zb_cmd_tracker_commit(slot, corr_id, ieee, ep->ep_id, 0x0008, 0x0000,
+			      true, true, level, ZB_CMD_TRACKER_TIMEOUT_MS);
 	return ESP_OK;
 }
 
@@ -268,8 +271,8 @@ esp_err_t zb_cluster_send_color_hs(uint64_t ieee, uint8_t hue, uint8_t sat,
 		return ESP_FAIL;
 	}
 
-	zb_cmd_tracker_commit(slot, corr_id, ieee, 0x0300, 0x0000, true,
-			      hue, ZB_CMD_TRACKER_TIMEOUT_MS);
+	zb_cmd_tracker_commit(slot, corr_id, ieee, ep->ep_id, 0x0300, 0x0000,
+			      true, true, hue, ZB_CMD_TRACKER_TIMEOUT_MS);
 	return ESP_OK;
 }
 
@@ -320,8 +323,8 @@ esp_err_t zb_cluster_send_color_xy(uint64_t ieee, uint16_t x, uint16_t y,
 		return ESP_FAIL;
 	}
 
-	zb_cmd_tracker_commit(slot, corr_id, ieee, 0x0300, 0x0003, true,
-			      x, ZB_CMD_TRACKER_TIMEOUT_MS);
+	zb_cmd_tracker_commit(slot, corr_id, ieee, ep->ep_id, 0x0300, 0x0003,
+			      true, true, x, ZB_CMD_TRACKER_TIMEOUT_MS);
 	return ESP_OK;
 }
 
@@ -371,8 +374,8 @@ esp_err_t zb_cluster_send_color_ct(uint64_t ieee, uint16_t mireds,
 		return ESP_FAIL;
 	}
 
-	zb_cmd_tracker_commit(slot, corr_id, ieee, 0x0300, 0x0007, true,
-			      mireds, ZB_CMD_TRACKER_TIMEOUT_MS);
+	zb_cmd_tracker_commit(slot, corr_id, ieee, ep->ep_id, 0x0300, 0x0007,
+			      true, true, mireds, ZB_CMD_TRACKER_TIMEOUT_MS);
 	return ESP_OK;
 }
 
@@ -428,8 +431,8 @@ static esp_err_t s_cluster_read_attr(uint64_t ieee, uint8_t ep_id,
 	}
 
 	if (silent) {
-		zb_cmd_tracker_commit(slot, corr_id, ieee, cluster_id, attr_id, false,
-				      0, ZB_PING_TIMEOUT_MS);
+		zb_cmd_tracker_commit(slot, corr_id, ieee, ep->ep_id, cluster_id, attr_id,
+				      false, false, 0, ZB_PING_TIMEOUT_MS);
 	}
 
 	return ESP_OK;
@@ -446,4 +449,108 @@ esp_err_t zb_cluster_ping(uint64_t ieee, const char *corr_id)
 {
 	return s_cluster_read_attr(ieee, 0, ZB_PING_CLUSTER_ID, ZB_PING_ATTR_ID,
 				   corr_id, true);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Interview helpers: bind + configure reporting                              */
+/* -------------------------------------------------------------------------- */
+
+static void s_bind_req_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx)
+{
+	uint16_t cluster_id = (uint16_t)(uintptr_t)user_ctx;
+
+	if (zdo_status != ESP_ZB_ZDP_STATUS_SUCCESS) {
+		ESP_LOGW(TAG, "Bind request failed for cluster 0x%04X, status=%d",
+			 cluster_id, zdo_status);
+	} else {
+		ESP_LOGI(TAG, "Bind request succeeded for cluster 0x%04X", cluster_id);
+	}
+}
+
+esp_err_t zb_cluster_send_bind_req(uint16_t network_addr, uint64_t ieee_addr,
+                                   uint8_t ep_id, uint16_t cluster_id)
+{
+	esp_zb_ieee_addr_t coord_ieee;
+	esp_zb_ieee_addr_t src_ieee;
+
+	memset(coord_ieee, 0, sizeof(coord_ieee));
+	memset(src_ieee, 0, sizeof(src_ieee));
+
+	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for bind request");
+		return ESP_FAIL;
+	}
+	esp_zb_get_long_address(coord_ieee);
+	esp_zb_lock_release();
+
+	memcpy(src_ieee, &ieee_addr, sizeof(src_ieee));
+
+	esp_zb_zdo_bind_req_param_t bind_req = {
+		.src_endp = ep_id,
+		.cluster_id = cluster_id,
+		.dst_addr_mode = ESP_ZB_ZDO_BIND_DST_ADDR_MODE_64_BIT_EXTENDED,
+		.dst_endp = 1,
+		.req_dst_addr = network_addr,
+	};
+	memcpy(bind_req.src_address, src_ieee, sizeof(bind_req.src_address));
+	memcpy(bind_req.dst_address_u.addr_long, coord_ieee,
+	       sizeof(bind_req.dst_address_u.addr_long));
+
+	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for bind request");
+		return ESP_FAIL;
+	}
+	esp_zb_zdo_device_bind_req(&bind_req, s_bind_req_cb,
+				   (void *)(uintptr_t)cluster_id);
+	esp_zb_lock_release();
+
+	return ESP_OK;
+}
+
+esp_err_t zb_cluster_send_configure_reporting(uint16_t network_addr, uint8_t ep_id,
+                                              uint16_t cluster_id, uint16_t attr_id,
+                                              uint8_t attr_type)
+{
+	uint8_t reportable_u8 = 1;
+	uint16_t reportable_u16 = 1;
+	void *reportable_change = &reportable_u8;
+
+	if (attr_type == ESP_ZB_ZCL_ATTR_TYPE_U16) {
+		reportable_change = &reportable_u16;
+	}
+
+	esp_zb_zcl_config_report_record_t record = {
+		.direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
+		.attributeID = attr_id,
+		.attrType = attr_type,
+		.min_interval = 0,
+		.max_interval = 1,
+		.reportable_change = reportable_change,
+	};
+
+	esp_zb_zcl_config_report_cmd_t cmd_req = {
+		.zcl_basic_cmd = {
+			.dst_addr_u.addr_short = network_addr,
+			.dst_endpoint = ep_id,
+			.src_endpoint = 1,
+		},
+		.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
+		.clusterID = cluster_id,
+		.record_number = 1,
+		.record_field = &record,
+	};
+
+	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for configure reporting");
+		return ESP_FAIL;
+	}
+	uint8_t status = esp_zb_zcl_config_report_cmd_req(&cmd_req);
+	esp_zb_lock_release();
+	if (status == 0xFF) {
+		ESP_LOGE(TAG,
+			 "Configure reporting failed for cluster 0x%04X attr 0x%04X",
+			 cluster_id, attr_id);
+		return ESP_FAIL;
+	}
+	return ESP_OK;
 }

@@ -42,6 +42,14 @@ esp_err_t zb_cluster_read_attr(uint64_t ieee, uint8_t ep_id,
 
 esp_err_t zb_cluster_ping(uint64_t ieee, const char *corr_id);
 
+/* Interview helpers: bind the device to the coordinator and configure reporting. */
+esp_err_t zb_cluster_send_bind_req(uint16_t network_addr, uint64_t ieee_addr,
+                                   uint8_t ep_id, uint16_t cluster_id);
+
+esp_err_t zb_cluster_send_configure_reporting(uint16_t network_addr, uint8_t ep_id,
+                                              uint16_t cluster_id, uint16_t attr_id,
+                                              uint8_t attr_type);
+
 #ifdef __cplusplus
 }
 #endif
