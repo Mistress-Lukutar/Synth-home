@@ -8,7 +8,15 @@
 extern "C" {
 #endif
 
+/* Timeout for instant commands (on/off, reads). */
 #define ZB_CMD_TRACKER_TIMEOUT_MS 5000
+/*
+ * Timeout for level/color commands: devices ramp to the target value and may
+ * take well over 5 s to converge (observed ~10 s for a Tuya CT dimmer with a
+ * 1 s requested transition). Timing out early made the server mark the device
+ * offline while it was still transitioning.
+ */
+#define ZB_CMD_TRACKER_TIMEOUT_TRANSITION_MS 15000
 
 esp_err_t zb_cmd_tracker_init(void);
 

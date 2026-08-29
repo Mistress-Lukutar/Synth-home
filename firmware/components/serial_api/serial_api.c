@@ -101,7 +101,10 @@ static void send_json_line(cJSON *root)
 		if (s_stdout_mutex) {
 			xSemaphoreTake(s_stdout_mutex, portMAX_DELAY);
 		}
-		printf("%s\n", out);
+		/* Leading newline: ESP-IDF log output shares this console and a
+		 * bootloader log tail may sit unprefixed in the CDC buffer; the
+		 * extra frame keeps JSON lines parseable after such glue. */
+		printf("\n%s\n", out);
 		fflush(stdout);
 		if (s_stdout_mutex) {
 			xSemaphoreGive(s_stdout_mutex);
@@ -164,6 +167,29 @@ static void ack_cmd(const char *evt_name, const char *ieee_str, esp_err_t err,
 	if (err != ESP_OK) {
 		cJSON_AddStringToObject(root, "error", esp_err_to_name(err));
 	}
+	send_json_line(root);
+	cJSON_Delete(root);
+}
+
+/*
+ * A command with a missing or ill-typed payload field used to be dropped
+ * silently, leaving the caller's pending correlation_id unresolved forever.
+ * Answer with a negative ack instead.
+ */
+static void ack_missing_field(const char *evt_name, const char *ieee_str,
+                              const char *corr_id, const char *field)
+{
+	cJSON *root = cJSON_CreateObject();
+	cJSON_AddStringToObject(root, "evt", evt_name);
+	cJSON_AddStringToObject(root, "ieee", ieee_str ? ieee_str : "");
+	cJSON_AddBoolToObject(root, "ok", false);
+	if (corr_id && corr_id[0] != '\0') {
+		cJSON_AddStringToObject(root, "correlation_id", corr_id);
+	}
+	cJSON_AddStringToObject(root, "error", "INVALID_ARG");
+	char msg[64];
+	snprintf(msg, sizeof(msg), "missing or invalid '%s'", field);
+	cJSON_AddStringToObject(root, "message", msg);
 	send_json_line(root);
 	cJSON_Delete(root);
 }
@@ -511,18 +537,25 @@ static void serial_task(void *arg)
 			} else if (strcmp(cmd_str, "on") == 0) {
 				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
 				if (cJSON_IsString(ieee)) handle_on(ieee->valuestring, ep_id, corr_id);
+				else ack_missing_field("on_ack", NULL, corr_id, "ieee");
 			} else if (strcmp(cmd_str, "off") == 0) {
 				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
 				if (cJSON_IsString(ieee)) handle_off(ieee->valuestring, ep_id, corr_id);
+				else ack_missing_field("off_ack", NULL, corr_id, "ieee");
 			} else if (strcmp(cmd_str, "toggle") == 0) {
 				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
 				if (cJSON_IsString(ieee)) handle_toggle(ieee->valuestring, ep_id, corr_id);
+				else ack_missing_field("toggle_ack", NULL, corr_id, "ieee");
 			} else if (strcmp(cmd_str, "level") == 0) {
 				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
 				cJSON *lvl = cJSON_GetObjectItem(root, "level");
 				if (cJSON_IsString(ieee) && cJSON_IsNumber(lvl)) {
 					handle_level(ieee->valuestring, (uint8_t)lvl->valuedouble,
 						     transition, ep_id, corr_id);
+				} else {
+					ack_missing_field("level_ack",
+							  cJSON_IsString(ieee) ? ieee->valuestring : NULL,
+							  corr_id, "level");
 				}
 			} else if (strcmp(cmd_str, "color") == 0) {
 				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
@@ -531,13 +564,21 @@ static void serial_task(void *arg)
 				if (cJSON_IsString(ieee) && cJSON_IsString(hex) && cJSON_IsString(mode)) {
 					handle_color(ieee->valuestring, hex->valuestring,
 						     mode->valuestring, transition, ep_id, corr_id);
+				} else {
+					ack_missing_field("color_ack",
+							  cJSON_IsString(ieee) ? ieee->valuestring : NULL,
+							  corr_id, cJSON_IsString(hex) ? "mode" : "hex");
 				}
 			} else if (strcmp(cmd_str, "color_ct") == 0) {
 				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
 				cJSON *ct = cJSON_GetObjectItem(root, "ct");
 				if (cJSON_IsString(ieee) && cJSON_IsNumber(ct)) {
 					handle_color_ct(ieee->valuestring,
-							(uint16_t)ct->valuedouble, transition, ep_id, corr_id);
+						(uint16_t)ct->valuedouble, transition, ep_id, corr_id);
+				} else {
+					ack_missing_field("color_ct_ack",
+							  cJSON_IsString(ieee) ? ieee->valuestring : NULL,
+							  corr_id, "ct");
 				}
 			} else if (strcmp(cmd_str, "read_attr") == 0) {
 				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
@@ -545,7 +586,12 @@ static void serial_task(void *arg)
 				cJSON *attr = cJSON_GetObjectItem(root, "attribute");
 				if (cJSON_IsString(ieee) && cJSON_IsString(cluster) && cJSON_IsString(attr)) {
 					handle_read_attr(ieee->valuestring, ep_id,
-							 cluster->valuestring, attr->valuestring, corr_id);
+						 cluster->valuestring, attr->valuestring, corr_id);
+				} else {
+					ack_missing_field("read_attr_ack",
+							  cJSON_IsString(ieee) ? ieee->valuestring : NULL,
+							  corr_id,
+							  cJSON_IsString(cluster) ? "attribute" : "cluster");
 				}
 			} else if (strcmp(cmd_str, "ping") == 0) {
 				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
