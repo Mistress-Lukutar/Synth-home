@@ -514,53 +514,24 @@ esp_err_t zb_cluster_send_configure_reporting(uint16_t network_addr, uint8_t ep_
                                               uint16_t cluster_id, uint16_t attr_id,
                                               uint8_t attr_type)
 {
-	uint8_t reportable_u8;
-	uint16_t reportable_u16;
-	void *reportable_change;
-
 	/*
-	 * Reporting policy: push changes at most once per second, refresh at most
-	 * hourly, and only when the value moved by a meaningful delta. The previous
-	 * config (min=0, max=1, delta=1) made mains-powered dimmers re-send every
-	 * attribute every second even when nothing changed, flooding the pipeline
-	 * and wearing the NVS liveness writes.
+	 * Reporting policy: push changes at most once per second and refresh at
+	 * most hourly. The idle 4 events/s flood was caused by max_interval=1
+	 * (forced periodic re-send), not by the reportable change, so the delta
+	 * stays at 1: a coarser threshold silently swallows small adjustments
+	 * and, worse, the settled value at the end of a dimming ramp when the
+	 * last ramp report landed within the threshold of the target level —
+	 * the UI then sticks on an intermediate value until max_interval.
+	 * Ramp report rate stays bounded by min_interval.
 	 */
 	uint16_t min_interval = 1;
 	uint16_t max_interval = 3600;
 
-	switch (cluster_id) {
-	case 0x0006:
-		/* OnOff: discrete, no reportable change. */
-		reportable_u8 = 1;
-		reportable_change = &reportable_u8;
-		break;
-	case 0x0008:
-		reportable_u8 = 5; /* CurrentLevel 0..255 */
-		reportable_change = &reportable_u8;
-		break;
-	case 0x0300:
-		switch (attr_id) {
-		case 0x0003:
-		case 0x0004:
-			reportable_u16 = 16; /* x/y 0..65535 */
-			reportable_change = &reportable_u16;
-			break;
-		case 0x0007:
-			reportable_u16 = 10; /* color temp mireds */
-			reportable_change = &reportable_u16;
-			break;
-		default:
-			/* Hue/Sat/ColorMode (u8). */
-			reportable_u8 = 5;
-			reportable_change = &reportable_u8;
-			break;
-		}
-		break;
-	default:
-		reportable_u8 = 1;
-		reportable_change = &reportable_u8;
-		break;
-	}
+	uint8_t reportable_u8 = 1;
+	uint16_t reportable_u16 = 1;
+	void *reportable_change =
+		(attr_type == ESP_ZB_ZCL_ATTR_TYPE_U16) ?
+		(void *)&reportable_u16 : (void *)&reportable_u8;
 
 	esp_zb_zcl_config_report_record_t record = {
 		.direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
