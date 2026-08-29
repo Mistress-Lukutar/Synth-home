@@ -211,13 +211,18 @@ function handleStateChange(data: any) {
         if (modeVal === 0) device.state[epKey].color_mode = 'hs'
         else if (modeVal === 1) device.state[epKey].color_mode = 'xy'
         else if (modeVal === 2) device.state[epKey].color_mode = 'ct'
-      } else if (clusterId === 0x0300 && attrId === 0x4002) {
+      } else if (clusterId === 0x0300 && attrId === 0x400A) {
+        // ZCL ColorCapabilities bitmap (0x400A). Zero/invalid reads are
+        // treated as "unknown" rather than "no capabilities".
         const bitmask = Number(value)
-        device.state[epKey].color_caps = {
-          hs: !!(bitmask & 0x01),
-          xy: !!(bitmask & 0x10),
-          ct: !!(bitmask & 0x20),
-          color_loop: !!(bitmask & 0x08),
+        if (Number.isFinite(bitmask) && bitmask !== 0) {
+          device.state[epKey].color_caps = {
+            hs: !!(bitmask & 0x01),
+            enhanced_hue: !!(bitmask & 0x02),
+            color_loop: !!(bitmask & 0x04),
+            xy: !!(bitmask & 0x08),
+            ct: !!(bitmask & 0x10),
+          }
         }
       } else if (clusterId === 0x0300 && attrId === 0x0000) {
         device.state[epKey].hue = Number(value)
@@ -469,7 +474,7 @@ function _isStaticCached(ep: any, cluster: string, attribute: string): boolean {
     if (attribute === '0x0003') return ep.level_max !== undefined
   }
   if (cluster === '0x0300') {
-    if (attribute === '0x4002') return ep.color_caps !== undefined
+    if (attribute === '0x400A') return ep.color_caps !== undefined
     if (attribute === '0x400B') return ep.ct_min !== undefined
     if (attribute === '0x400C') return ep.ct_max !== undefined
   }
@@ -499,8 +504,8 @@ async function pollDevices() {
         }
       }
       if (clusters.includes(768)) {
-        if (!_isStaticCached(ep, '0x0300', '0x4002')) {
-          items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x4002' })
+        if (!_isStaticCached(ep, '0x0300', '0x400A')) {
+          items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x400A' })
         }
         items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0008' })
         items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0000' })

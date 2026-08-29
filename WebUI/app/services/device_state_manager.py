@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 import structlog
+from sqlalchemy import select
 from sqlalchemy.orm import attributes
 
 from app.db import async_session
@@ -36,6 +37,42 @@ logger = structlog.get_logger(__name__)
 
 _StateChangedCallback = Callable[[str, Optional[int], dict[str, Any]], None]
 _OnlineChangedCallback = Callable[[str, bool], None]
+
+# ZCL ColorCapabilities (attribute 0x400A) bitmap, per ZCL spec table 5-19.
+_CAP_HS = 0x01
+_CAP_ENHANCED_HUE = 0x02
+_CAP_COLOR_LOOP = 0x04
+_CAP_XY = 0x08
+_CAP_CT = 0x10
+
+
+def _color_caps_from_bitmask(value: Any) -> Optional[dict[str, bool]]:
+    """Decode the ZCL ColorCapabilities (0x400A) bitmap.
+
+    Returns ``None`` when the value is not numeric or the bitmask is zero so
+    an unreadable/bogus read is treated as "capabilities unknown" instead of
+    "no capabilities" (every device with cluster 0x0300 supports at least one
+    color mode, so 0 can only mean a bad read).
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    bitmask = int(value)
+    if bitmask == 0:
+        return None
+    return {
+        "hs": bool(bitmask & _CAP_HS),
+        "enhanced_hue": bool(bitmask & _CAP_ENHANCED_HUE),
+        "color_loop": bool(bitmask & _CAP_COLOR_LOOP),
+        "xy": bool(bitmask & _CAP_XY),
+        "ct": bool(bitmask & _CAP_CT),
+    }
+
+
+def _is_degenerate_caps(caps: Any) -> bool:
+    """True for a caps dict that claims neither hs/xy nor ct support."""
+    if not isinstance(caps, dict):
+        return False
+    return not any(caps.get(key) for key in ("hs", "xy", "ct"))
 
 
 class DeviceStateManager:
@@ -322,6 +359,48 @@ class DeviceStateManager:
             await session.commit()
             return all_devices
 
+    async def sanitize_color_caps(self) -> int:
+        """Drop all-false ``color_caps`` persisted by the broken 0x4002 parser.
+
+        ColorCapabilities is attribute 0x400A; values previously decoded from
+        0x4002 (which is ColorLoopActive, usually 0) produced all-false caps
+        that the static-attribute cache then never re-read. Removing them lets
+        the periodic poll fetch the real capabilities again. Idempotent.
+        """
+        fixed = 0
+        async with async_session() as session:
+            devices = (await session.execute(select(Device))).scalars().all()
+            for device in devices:
+                state_changed = False
+                state = copy.deepcopy(device.state) if device.state else {}
+                for ep_state in state.values():
+                    if isinstance(ep_state, dict) and _is_degenerate_caps(
+                        ep_state.get("color_caps")
+                    ):
+                        del ep_state["color_caps"]
+                        state_changed = True
+                if state_changed:
+                    device.state = state
+                    attributes.flag_modified(device, "state")
+
+                endpoints_changed = False
+                endpoints = copy.deepcopy(device.endpoints) if device.endpoints else []
+                for ep in endpoints:
+                    if isinstance(ep, dict) and _is_degenerate_caps(ep.get("color_caps")):
+                        del ep["color_caps"]
+                        endpoints_changed = True
+                if endpoints_changed:
+                    device.endpoints = endpoints
+                    attributes.flag_modified(device, "endpoints")
+
+                if state_changed or endpoints_changed:
+                    fixed += 1
+
+            if fixed:
+                await session.commit()
+                logger.info("sanitized_degenerate_color_caps", devices=fixed)
+        return fixed
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -380,16 +459,11 @@ class DeviceStateManager:
                 mode = "hs" if mode_val == 0 else "xy" if mode_val == 1 else "ct" if mode_val == 2 else mode_val
                 ep_state["color_mode"] = mode
                 cached_updates["color_mode"] = mode
-            elif attr_id == 0x4002:
-                bitmask = int(value)
-                caps = {
-                    "hs": bool(bitmask & 0x01),
-                    "xy": bool(bitmask & 0x10),
-                    "ct": bool(bitmask & 0x20),
-                    "color_loop": bool(bitmask & 0x08),
-                }
-                ep_state["color_caps"] = caps
-                cached_updates["color_caps"] = caps
+            elif attr_id == 0x400A:
+                caps = _color_caps_from_bitmask(value)
+                if caps is not None:
+                    ep_state["color_caps"] = caps
+                    cached_updates["color_caps"] = caps
             elif attr_id == 0x400B:
                 ep_state["ct_min"] = int(value)
                 cached_updates["ct_min"] = int(value)
@@ -412,7 +486,7 @@ class DeviceStateManager:
         if cluster_id not in (0x0008, 0x0300) or attr_id not in (
             0x0002,
             0x0003,
-            0x4002,
+            0x400A,
             0x400B,
             0x400C,
         ):
@@ -430,14 +504,10 @@ class DeviceStateManager:
                 elif attr_id == 0x0003:
                     ep["level_max"] = int(value)
             elif cluster_id == 0x0300:
-                if attr_id == 0x4002:
-                    bitmask = int(value)
-                    ep["color_caps"] = {
-                        "hs": bool(bitmask & 0x01),
-                        "xy": bool(bitmask & 0x10),
-                        "ct": bool(bitmask & 0x20),
-                        "color_loop": bool(bitmask & 0x08),
-                    }
+                if attr_id == 0x400A:
+                    caps = _color_caps_from_bitmask(value)
+                    if caps is not None:
+                        ep["color_caps"] = caps
                 elif attr_id == 0x400B:
                     ep["ct_min"] = int(value)
                 elif attr_id == 0x400C:
@@ -453,14 +523,10 @@ class DeviceStateManager:
                 elif attr_id == 0x0003:
                     new_ep["level_max"] = int(value)
             elif cluster_id == 0x0300:
-                if attr_id == 0x4002:
-                    bitmask = int(value)
-                    new_ep["color_caps"] = {
-                        "hs": bool(bitmask & 0x01),
-                        "xy": bool(bitmask & 0x10),
-                        "ct": bool(bitmask & 0x20),
-                        "color_loop": bool(bitmask & 0x08),
-                    }
+                if attr_id == 0x400A:
+                    caps = _color_caps_from_bitmask(value)
+                    if caps is not None:
+                        new_ep["color_caps"] = caps
                 elif attr_id == 0x400B:
                     new_ep["ct_min"] = int(value)
                 elif attr_id == 0x400C:

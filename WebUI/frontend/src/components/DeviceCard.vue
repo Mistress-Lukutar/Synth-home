@@ -61,46 +61,33 @@
 
           <!-- Color controls (cluster 0x0300 = 768) -->
           <template v-if="hasCluster(ep, 768)">
-            <div class="color-mode-row">
-              <label class="color-mode-label">Color</label>
-              <select
-                class="color-mode-select"
-                v-model="uiColorModes[ep.id]"
-                @change="onColorModeChange(ep.id, uiColorModes[ep.id])"
-                :disabled="device.online === false"
-              >
-                <option v-if="colorSupports(ep.id, 'hs') || colorSupports(ep.id, 'xy')" value="rgb">RGB</option>
-                <option v-if="colorSupports(ep.id, 'ct')" value="ct">CT</option>
-              </select>
+            <!-- Hue/saturation wheel (brightness is the separate level slider) -->
+            <div
+              v-if="colorSupports(ep.id, 'hs') || colorSupports(ep.id, 'xy')"
+              class="color-wheel-row"
+            >
+              <HueSatWheel
+                v-bind="wheelHueSat(ep.id)"
+                :disabled="device.online === false || isPending(ep.id, 'color')"
+                @commit="(v) => setColorHs(ep.id, v.hue, v.sat)"
+              />
             </div>
 
-            <!-- RGB: Color wheel (hub converts hex → HS or XY) -->
-            <template v-if="uiColorModes[ep.id] === 'rgb'">
-              <div class="color-picker-row">
-                <input
-                  type="color"
-                  class="color-picker-native"
-                  :value="lastHex[ep.id] || '#ffffff'"
-                  @change="(e) => setColorRgb(ep.id, (e.target as HTMLInputElement).value)"
-                  :disabled="device.online === false"
-                />
-              </div>
-            </template>
-
-            <!-- CT: Gradient slider -->
-            <template v-if="uiColorModes[ep.id] === 'ct'">
-              <div class="ct-slider-row">
-                <input
-                  type="range"
-                  :min="getState(ep.id, 'ct_min') ?? 153"
-                  :max="getState(ep.id, 'ct_max') ?? 500"
-                  class="ct-slider"
-                  :value="getState(ep.id, 'ct') ?? 300"
-                  @change="(e) => setCt(ep.id, Number((e.target as HTMLInputElement).value))"
-                  :disabled="device.online === false"
-                />
-              </div>
-            </template>
+            <!-- Color temperature: gradient slider -->
+            <div
+              v-if="colorSupports(ep.id, 'ct') || ctRangeKnown(ep.id)"
+              class="ct-slider-row"
+            >
+              <input
+                type="range"
+                :min="getState(ep.id, 'ct_min') ?? 153"
+                :max="getState(ep.id, 'ct_max') ?? 500"
+                class="ct-slider"
+                :value="getState(ep.id, 'ct') ?? 300"
+                @change="(e) => setCt(ep.id, Number((e.target as HTMLInputElement).value))"
+                :disabled="isPending(ep.id, 'color_ct') || device.online === false"
+              />
+            </div>
           </template>
         </div>
       </div>
@@ -112,9 +99,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, reactive, watch, onMounted } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { useHubStore } from '../composables/useHubStore'
 import * as api from '../api'
+import HueSatWheel from './HueSatWheel.vue'
 
 const props = defineProps<{ device: any }>()
 const store = useHubStore()
@@ -122,8 +110,6 @@ const store = useHubStore()
 const editing = ref(false)
 const editName = ref('')
 const inputRef = ref<HTMLInputElement | null>(null)
-const uiColorModes = reactive<Record<number, string>>({})
-const lastHex = reactive<Record<number, string>>({})
 
 function zclHsToHex(hue: number, sat: number, level: number = 254): string {
   // ZCL hue 0-254, sat 0-254, level 0-254 → RGB hex
@@ -167,30 +153,37 @@ function zclXyToHex(x: number, y: number, level: number = 254): string {
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`
 }
 
-function syncColorModesFromState() {
-  for (const ep of props.device.endpoints || []) {
-    const mode = getState(ep.id, 'color_mode')
-    if (mode === 'hs' || mode === 'xy') {
-      uiColorModes[ep.id] = 'rgb'
-      // Reconstruct hex from cached state for color picker (using CurrentLevel as brightness)
-      const level = getState(ep.id, 'level') ?? 254
-      const hue = getState(ep.id, 'hue')
-      const sat = getState(ep.id, 'sat')
-      const xv = getState(ep.id, 'x')
-      const yv = getState(ep.id, 'y')
-      if (hue !== undefined && sat !== undefined) {
-        lastHex[ep.id] = zclHsToHex(hue, sat, level)
-      } else if (xv !== undefined && yv !== undefined) {
-        lastHex[ep.id] = zclXyToHex(xv, yv, level)
-      }
-    } else if (mode === 'ct') {
-      uiColorModes[ep.id] = 'ct'
-    }
+function hexToZclHueSat(hex: string): { hue: number; sat: number } {
+  const r = parseInt(hex.slice(1, 3), 16) / 255
+  const g = parseInt(hex.slice(3, 5), 16) / 255
+  const b = parseInt(hex.slice(5, 7), 16) / 255
+  const max = Math.max(r, g, b)
+  const min = Math.min(r, g, b)
+  const d = max - min
+  let h = 0
+  if (d !== 0) {
+    if (max === r) h = 60 * (((g - b) / d) % 6)
+    else if (max === g) h = 60 * ((b - r) / d + 2)
+    else h = 60 * ((r - g) / d + 4)
   }
+  if (h < 0) h += 360
+  const s = max === 0 ? 0 : d / max
+  return { hue: Math.round((h / 360) * 254), sat: Math.round(s * 254) }
 }
 
-onMounted(syncColorModesFromState)
-watch(() => props.device.state, syncColorModesFromState, { deep: true })
+function wheelHueSat(epId: number): { hue: number; sat: number } {
+  const hue = getState(epId, 'hue')
+  const sat = getState(epId, 'sat')
+  if (hue !== undefined && sat !== undefined) {
+    return { hue: Number(hue), sat: Number(sat) }
+  }
+  const x = getState(epId, 'x')
+  const y = getState(epId, 'y')
+  if (x !== undefined && y !== undefined) {
+    return hexToZclHueSat(zclXyToHex(Number(x), Number(y), 254))
+  }
+  return { hue: 0, sat: 0 }
+}
 
 const displayName = computed(() => props.device.name || 'Unknown Device')
 
@@ -239,18 +232,14 @@ function getState(epId: number, key: string): any {
 function colorSupports(epId: number, cap: 'hs' | 'xy' | 'ct' | 'color_loop'): boolean {
   const caps = getState(epId, 'color_caps')
   if (!caps) return true
+  // An all-false caps dict means "unknown", never "no color support at all"
+  // (a device with cluster 0x0300 always supports at least one color mode).
+  if (!caps.hs && !caps.xy && !caps.ct) return true
   return !!caps[cap]
 }
 
-function onColorModeChange(epId: number, mode: string) {
-  if (mode === 'rgb') {
-    api.readAttr(props.device.ieee, epId, '0x0300', '0x0000').catch(() => {})
-    api.readAttr(props.device.ieee, epId, '0x0300', '0x0001').catch(() => {})
-    api.readAttr(props.device.ieee, epId, '0x0300', '0x0003').catch(() => {})
-    api.readAttr(props.device.ieee, epId, '0x0300', '0x0004').catch(() => {})
-  } else if (mode === 'ct') {
-    api.readAttr(props.device.ieee, epId, '0x0300', '0x0007').catch(() => {})
-  }
+function ctRangeKnown(epId: number): boolean {
+  return getState(epId, 'ct_min') !== undefined || getState(epId, 'ct_max') !== undefined
 }
 
 function isPending(epId: number, action: string): boolean {
@@ -288,12 +277,14 @@ async function setLevel(epId: number, level: number) {
   await sendAndTrack('level', epId, { level })
 }
 
-async function setColorRgb(epId: number, hex: string) {
+async function setColorHs(epId: number, hue: number, sat: number) {
   if (isPending(epId, 'color')) return
-  lastHex[epId] = hex
-  const caps = getState(epId, 'color_caps') || { hs: true, xy: true }
-  // Prefer XY if supported (more compatible), fallback to HS
-  const mode = caps.xy ? 'xy' : 'hs'
+  // V=254 keeps the hex a pure hue/saturation pair: the hub discards V and
+  // brightness stays under the level slider.
+  const hex = zclHsToHex(hue, sat, 254)
+  const caps = getState(epId, 'color_caps')
+  // Prefer HS when supported (1:1 wheel mapping), fallback to XY
+  const mode = caps?.hs ? 'hs' : 'xy'
   try {
     const result = await api.sendColor(props.device.ieee, hex, mode, epId)
     store.addPendingCommand(result.correlation_id, {
@@ -426,43 +417,11 @@ async function setCt(epId: number, ct: number) {
   accent-color: #00ff88;
 }
 
-/* Color mode row */
-.color-mode-row {
+/* Hue/saturation wheel */
+.color-wheel-row {
   display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.color-mode-label {
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  color: #888;
-  letter-spacing: 0.5px;
-}
-.color-mode-select {
-  background: rgba(0,0,0,0.4);
-  border: 1px solid rgba(255,255,255,0.2);
-  border-radius: 4px;
-  color: #fff;
-  padding: 4px 8px;
-  font-size: 13px;
-}
-.color-mode-select option {
-  background: #222;
-  color: #fff;
-}
-
-/* Color picker */
-.color-picker-row {
-  display: flex;
-  align-items: center;
-}
-.color-picker-native {
-  width: 100%;
-  height: 40px;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  background: none;
+  justify-content: center;
+  padding: 4px 0;
 }
 
 /* CT slider */
