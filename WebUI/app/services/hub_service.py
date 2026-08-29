@@ -42,6 +42,12 @@ class HubService:
         self._bg_tasks: set[asyncio.Task] = set()
         self._ping_task: Optional[asyncio.Task] = None
         self._stop_ping = asyncio.Event()
+        # State changes are applied by a single ordered worker: spawning one
+        # task per event let rapid reports during a dimming ramp (e.g. 110
+        # then 128) race for the per-device lock and leave the older value
+        # persisted last.
+        self._state_events: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+        self._state_worker: Optional[asyncio.Task] = None
 
         self._state_manager = state_manager or DeviceStateManager()
         self._state_manager.set_callbacks(
@@ -74,6 +80,10 @@ class HubService:
             logger.info("disconnecting_from_hub")
         self._stop_ping_loop()
         await self._cancel_background_tasks()
+        # Drop state changes that were queued but never applied; a fresh
+        # connect re-syncs everything from the hub anyway.
+        while not self._state_events.empty():
+            self._state_events.get_nowait()
         await self._client.disconnect()
         await self._state_manager.mark_all_devices_offline()
         await self._event_bus.publish("hub_disconnected", {})
@@ -122,9 +132,7 @@ class HubService:
     ) -> Dict[str, Any]:
         if not self.is_connected():
             raise HubConnectionError()
-        result = await self._client.read_attr_and_wait(
-            ieee, endpoint, cluster, attribute, timeout
-        )
+        result = await self._client.read_attr_and_wait(ieee, endpoint, cluster, attribute, timeout)
         logger.info(
             "read_attr_wait_done",
             ieee=ieee,
@@ -200,7 +208,10 @@ class HubService:
             self._spawn_background(self._handle_ack(data, evt))
 
         if evt == "state_change":
-            self._spawn_background(self._handle_state_change(data))
+            # Must be applied in arrival order (see _state_events above);
+            # fire-and-forget tasks here would reorder ramp reports.
+            self._ensure_state_worker()
+            self._state_events.put_nowait(data)
 
         # Publish domain events for downstream consumers (scheduler, SSE, etc.)
         if evt in (
@@ -215,9 +226,7 @@ class HubService:
                 self._event_bus.publish("device_event", {"event": evt, "data": data})
             )
 
-        self._spawn_background(
-            self._event_bus.publish("hub_message", {"data": data})
-        )
+        self._spawn_background(self._event_bus.publish("hub_message", {"data": data}))
 
     async def _sync_devices(self, devices: List[Dict[str, Any]]) -> None:
         """Persist or update device topology in the database.
@@ -238,7 +247,7 @@ class HubService:
         cached: List[Dict[str, Any]],
         db_devices: List[Dict[str, Any]],
         seen_ieees: set[str],
-) -> List[Dict[str, Any]]:
+    ) -> List[Dict[str, Any]]:
         """Merge DB topology into the cached list, preserving cached state."""
         merged: List[Dict[str, Any]] = []
         for dev in db_devices:
@@ -268,9 +277,7 @@ class HubService:
         ieee = data.get("ieee_addr")
         cluster = data.get("cluster")
         correlation_id = data.get("correlation_id")
-        await self._state_manager.on_command_status(
-            correlation_id, status, ieee, cluster
-        )
+        await self._state_manager.on_command_status(correlation_id, status, ieee, cluster)
 
     async def _handle_ack(self, data: Dict[str, Any], evt: str) -> None:
         """Handle *_ack events (on_ack, off_ack, toggle_ack, level_ack, etc.)."""
@@ -350,6 +357,24 @@ class HubService:
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
 
+    def _ensure_state_worker(self) -> None:
+        """Start the ordered state_change consumer (idempotent)."""
+        if self._state_worker is None or self._state_worker.done():
+            self._state_worker = asyncio.create_task(self._state_worker_loop())
+            self._bg_tasks.add(self._state_worker)
+            self._state_worker.add_done_callback(self._bg_tasks.discard)
+
+    async def _state_worker_loop(self) -> None:
+        """Apply state_change events strictly in arrival order."""
+        while True:
+            data = await self._state_events.get()
+            try:
+                await self._handle_state_change(data)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("state_change_apply_failed")
+
     async def _cancel_background_tasks(self) -> None:
         """Cancel any outstanding background tasks."""
         if not self._bg_tasks:
@@ -383,9 +408,7 @@ class HubService:
         try:
             while not self._stop_ping.is_set():
                 try:
-                    await asyncio.wait_for(
-                        self._stop_ping.wait(), timeout=PING_INTERVAL_SECONDS
-                    )
+                    await asyncio.wait_for(self._stop_ping.wait(), timeout=PING_INTERVAL_SECONDS)
                 except asyncio.TimeoutError:
                     pass
                 if self._stop_ping.is_set():
@@ -395,9 +418,7 @@ class HubService:
                     continue
                 try:
                     # Drop pending commands whose firmware event was lost.
-                    expired = self._state_manager.sweep_expired(
-                        PENDING_COMMAND_TTL_SECONDS
-                    )
+                    expired = self._state_manager.sweep_expired(PENDING_COMMAND_TTL_SECONDS)
                     if expired:
                         logger.info("pending_commands_swept", count=expired)
                     await self._ping_all_devices()
@@ -438,9 +459,7 @@ class HubService:
                 # Register the response future BEFORE sending (see ping_device).
                 future = self._register_ping_future(correlation_id)
                 await self._client.ping(ieee, correlation_id)
-                self._spawn_background(
-                    self._wait_ping_result(ieee, correlation_id, future)
-                )
+                self._spawn_background(self._wait_ping_result(ieee, correlation_id, future))
             except Exception:
                 logger.exception("ping_send_failed", ieee=ieee)
             # Stagger pings so the Zigbee network is not flooded.
