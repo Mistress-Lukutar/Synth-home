@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -36,6 +37,9 @@ typedef void (*zb_stack_read_attr_resp_cb_t)(uint16_t short_addr,
 esp_err_t zb_stack_init(void);
 esp_err_t zb_stack_start_network(void);
 esp_err_t zb_stack_permit_join(uint8_t duration_sec);
+
+/* Block until the Zigbee network is operational (steering done). */
+bool zb_stack_wait_network_ready(uint32_t timeout_ms);
 
 void zb_stack_register_callbacks(zb_stack_device_join_cb_t  join_cb,
                                  zb_stack_device_leave_cb_t leave_cb,
