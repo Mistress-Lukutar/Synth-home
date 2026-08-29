@@ -151,12 +151,16 @@ static void handle_list(void)
 	cJSON_Delete(root);
 }
 
-static void ack_cmd(const char *evt_name, const char *ieee_str, esp_err_t err)
+static void ack_cmd(const char *evt_name, const char *ieee_str, esp_err_t err,
+                    const char *corr_id)
 {
 	cJSON *root = cJSON_CreateObject();
 	cJSON_AddStringToObject(root, "evt", evt_name);
 	cJSON_AddStringToObject(root, "ieee", ieee_str ? ieee_str : "");
 	cJSON_AddBoolToObject(root, "ok", err == ESP_OK);
+	if (corr_id && corr_id[0] != '\0') {
+		cJSON_AddStringToObject(root, "correlation_id", corr_id);
+	}
 	if (err != ESP_OK) {
 		cJSON_AddStringToObject(root, "error", esp_err_to_name(err));
 	}
@@ -164,46 +168,47 @@ static void ack_cmd(const char *evt_name, const char *ieee_str, esp_err_t err)
 	cJSON_Delete(root);
 }
 
-static void handle_on(const char *ieee_str, uint8_t ep_id)
+static void handle_on(const char *ieee_str, uint8_t ep_id, const char *corr_id)
 {
 	ESP_LOGI(TAG, "handle_on %s ep=%u", ieee_str, ep_id);
 	uint64_t ieee = parse_ieee(ieee_str);
-	esp_err_t err = zb_cluster_send_on_off(ieee, ZB_CMD_ON_OFF_ON, "serial", ep_id);
+	esp_err_t err = zb_cluster_send_on_off(ieee, ZB_CMD_ON_OFF_ON, corr_id, ep_id);
 	ESP_LOGI(TAG, "handle_on result %s", esp_err_to_name(err));
-	ack_cmd("on_ack", ieee_str, err);
+	ack_cmd("on_ack", ieee_str, err, corr_id);
 }
 
-static void handle_off(const char *ieee_str, uint8_t ep_id)
+static void handle_off(const char *ieee_str, uint8_t ep_id, const char *corr_id)
 {
 	ESP_LOGI(TAG, "handle_off %s ep=%u", ieee_str, ep_id);
 	uint64_t ieee = parse_ieee(ieee_str);
-	esp_err_t err = zb_cluster_send_on_off(ieee, ZB_CMD_ON_OFF_OFF, "serial", ep_id);
+	esp_err_t err = zb_cluster_send_on_off(ieee, ZB_CMD_ON_OFF_OFF, corr_id, ep_id);
 	ESP_LOGI(TAG, "handle_off result %s", esp_err_to_name(err));
-	ack_cmd("off_ack", ieee_str, err);
+	ack_cmd("off_ack", ieee_str, err, corr_id);
 }
 
-static void handle_toggle(const char *ieee_str, uint8_t ep_id)
+static void handle_toggle(const char *ieee_str, uint8_t ep_id, const char *corr_id)
 {
 	ESP_LOGI(TAG, "handle_toggle %s ep=%u", ieee_str, ep_id);
 	uint64_t ieee = parse_ieee(ieee_str);
-	esp_err_t err = zb_cluster_send_on_off(ieee, ZB_CMD_ON_OFF_TOGGLE, "serial", ep_id);
+	esp_err_t err = zb_cluster_send_on_off(ieee, ZB_CMD_ON_OFF_TOGGLE, corr_id, ep_id);
 	ESP_LOGI(TAG, "handle_toggle result %s", esp_err_to_name(err));
-	ack_cmd("toggle_ack", ieee_str, err);
+	ack_cmd("toggle_ack", ieee_str, err, corr_id);
 }
 
 static void handle_level(const char *ieee_str, uint8_t level,
-                           uint16_t transition, uint8_t ep_id)
+                           uint16_t transition, uint8_t ep_id, const char *corr_id)
 {
 	ESP_LOGI(TAG, "handle_level %s -> %d trans=%u ep=%u",
 		 ieee_str, level, transition, ep_id);
 	uint64_t ieee = parse_ieee(ieee_str);
-	esp_err_t err = zb_cluster_send_level(ieee, level, transition, "serial", ep_id);
+	esp_err_t err = zb_cluster_send_level(ieee, level, transition, corr_id, ep_id);
 	ESP_LOGI(TAG, "handle_level result %s", esp_err_to_name(err));
-	ack_cmd("level_ack", ieee_str, err);
+	ack_cmd("level_ack", ieee_str, err, corr_id);
 }
 
 static void handle_color(const char *ieee_str, const char *hex,
-                           const char *mode, uint16_t transition, uint8_t ep_id)
+                           const char *mode, uint16_t transition, uint8_t ep_id,
+                           const char *corr_id)
 {
 	ESP_LOGI(TAG, "handle_color %s -> %s mode=%s trans=%u ep=%u",
 		 ieee_str, hex, mode ? mode : "null", transition, ep_id);
@@ -216,13 +221,13 @@ static void handle_color(const char *ieee_str, const char *hex,
 		ep = zb_device_mgr_find_ep_with_cluster(ieee, 0x0300);
 	}
 	if (!ep) {
-		ack_cmd("color_ack", ieee_str, ESP_ERR_NOT_FOUND);
+		ack_cmd("color_ack", ieee_str, ESP_ERR_NOT_FOUND, corr_id);
 		return;
 	}
 
 	uint8_t r, g, b;
 	if (!color_utils_hex_to_rgb(hex, &r, &g, &b)) {
-		ack_cmd("color_ack", ieee_str, ESP_ERR_INVALID_ARG);
+		ack_cmd("color_ack", ieee_str, ESP_ERR_INVALID_ARG, corr_id);
 		return;
 	}
 
@@ -230,18 +235,19 @@ static void handle_color(const char *ieee_str, const char *hex,
 	if (mode && strcmp(mode, "hs") == 0) {
 		uint8_t h, s;
 		color_utils_rgb_to_hsv(r, g, b, &h, &s);
-		err = zb_cluster_send_color_hs(ieee, h, s, transition, "serial", ep->ep_id);
+		err = zb_cluster_send_color_hs(ieee, h, s, transition, corr_id, ep->ep_id);
 	} else if (mode && strcmp(mode, "xy") == 0) {
 		uint16_t x, y;
 		color_utils_rgb_to_xy(r, g, b, &x, &y);
-		err = zb_cluster_send_color_xy(ieee, x, y, transition, "serial", ep->ep_id);
+		err = zb_cluster_send_color_xy(ieee, x, y, transition, corr_id, ep->ep_id);
 	}
 	ESP_LOGI(TAG, "handle_color result %s", esp_err_to_name(err));
-	ack_cmd("color_ack", ieee_str, err);
+	ack_cmd("color_ack", ieee_str, err, corr_id);
 }
 
 static void handle_color_ct(const char *ieee_str, uint16_t mireds,
-                              uint16_t transition, uint8_t ep_id)
+                              uint16_t transition, uint8_t ep_id,
+                              const char *corr_id)
 {
 	ESP_LOGI(TAG, "handle_color_ct %s -> %u trans=%u ep=%u",
 		 ieee_str, mireds, transition, ep_id);
@@ -254,25 +260,26 @@ static void handle_color_ct(const char *ieee_str, uint16_t mireds,
 		ep = zb_device_mgr_find_ep_with_cluster(ieee, 0x0300);
 	}
 	if (!ep) {
-		ack_cmd("color_ct_ack", ieee_str, ESP_ERR_NOT_FOUND);
+		ack_cmd("color_ct_ack", ieee_str, ESP_ERR_NOT_FOUND, corr_id);
 		return;
 	}
 
-	esp_err_t err = zb_cluster_send_color_ct(ieee, mireds, transition, "serial", ep->ep_id);
+	esp_err_t err = zb_cluster_send_color_ct(ieee, mireds, transition, corr_id, ep->ep_id);
 	ESP_LOGI(TAG, "handle_color_ct result %s", esp_err_to_name(err));
-	ack_cmd("color_ct_ack", ieee_str, err);
+	ack_cmd("color_ct_ack", ieee_str, err, corr_id);
 }
 
 static void handle_read_attr(const char *ieee_str, uint8_t ep_id,
-                             const char *cluster_str, const char *attr_str)
+                             const char *cluster_str, const char *attr_str,
+                             const char *corr_id)
 {
 	ESP_LOGI(TAG, "handle_read_attr %s ep=%u cluster=%s attr=%s",
 		 ieee_str, ep_id, cluster_str, attr_str);
 	uint64_t ieee = parse_ieee(ieee_str);
 	uint16_t cluster_id = (uint16_t)strtoul(cluster_str, NULL, 0);
 	uint16_t attr_id = (uint16_t)strtoul(attr_str, NULL, 0);
-	esp_err_t err = zb_cluster_read_attr(ieee, ep_id, cluster_id, attr_id, "serial");
-	ack_cmd("read_attr_ack", ieee_str, err);
+	esp_err_t err = zb_cluster_read_attr(ieee, ep_id, cluster_id, attr_id, corr_id);
+	ack_cmd("read_attr_ack", ieee_str, err, corr_id);
 }
 
 static void handle_permit(uint8_t duration)
@@ -481,6 +488,12 @@ static void serial_task(void *arg)
 
 			const char *cmd_str = cmd->valuestring;
 
+			const char *corr_id = NULL;
+			cJSON *corr_item = cJSON_GetObjectItem(root, "correlation_id");
+			if (cJSON_IsString(corr_item)) {
+				corr_id = corr_item->valuestring;
+			}
+
 			uint8_t ep_id = 0;
 			cJSON *ep_item = cJSON_GetObjectItem(root, "endpoint");
 			if (cJSON_IsNumber(ep_item)) {
@@ -497,19 +510,19 @@ static void serial_task(void *arg)
 				handle_list();
 			} else if (strcmp(cmd_str, "on") == 0) {
 				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
-				if (cJSON_IsString(ieee)) handle_on(ieee->valuestring, ep_id);
+				if (cJSON_IsString(ieee)) handle_on(ieee->valuestring, ep_id, corr_id);
 			} else if (strcmp(cmd_str, "off") == 0) {
 				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
-				if (cJSON_IsString(ieee)) handle_off(ieee->valuestring, ep_id);
+				if (cJSON_IsString(ieee)) handle_off(ieee->valuestring, ep_id, corr_id);
 			} else if (strcmp(cmd_str, "toggle") == 0) {
 				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
-				if (cJSON_IsString(ieee)) handle_toggle(ieee->valuestring, ep_id);
+				if (cJSON_IsString(ieee)) handle_toggle(ieee->valuestring, ep_id, corr_id);
 			} else if (strcmp(cmd_str, "level") == 0) {
 				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
 				cJSON *lvl = cJSON_GetObjectItem(root, "level");
 				if (cJSON_IsString(ieee) && cJSON_IsNumber(lvl)) {
 					handle_level(ieee->valuestring, (uint8_t)lvl->valuedouble,
-						     transition, ep_id);
+						     transition, ep_id, corr_id);
 				}
 			} else if (strcmp(cmd_str, "color") == 0) {
 				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
@@ -517,14 +530,14 @@ static void serial_task(void *arg)
 				cJSON *mode = cJSON_GetObjectItem(root, "mode");
 				if (cJSON_IsString(ieee) && cJSON_IsString(hex) && cJSON_IsString(mode)) {
 					handle_color(ieee->valuestring, hex->valuestring,
-						     mode->valuestring, transition, ep_id);
+						     mode->valuestring, transition, ep_id, corr_id);
 				}
 			} else if (strcmp(cmd_str, "color_ct") == 0) {
 				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
 				cJSON *ct = cJSON_GetObjectItem(root, "ct");
 				if (cJSON_IsString(ieee) && cJSON_IsNumber(ct)) {
 					handle_color_ct(ieee->valuestring,
-							(uint16_t)ct->valuedouble, transition, ep_id);
+							(uint16_t)ct->valuedouble, transition, ep_id, corr_id);
 				}
 			} else if (strcmp(cmd_str, "read_attr") == 0) {
 				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
@@ -532,7 +545,7 @@ static void serial_task(void *arg)
 				cJSON *attr = cJSON_GetObjectItem(root, "attribute");
 				if (cJSON_IsString(ieee) && cJSON_IsString(cluster) && cJSON_IsString(attr)) {
 					handle_read_attr(ieee->valuestring, ep_id,
-							 cluster->valuestring, attr->valuestring);
+							 cluster->valuestring, attr->valuestring, corr_id);
 				}
 			} else if (strcmp(cmd_str, "ping") == 0) {
 				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");

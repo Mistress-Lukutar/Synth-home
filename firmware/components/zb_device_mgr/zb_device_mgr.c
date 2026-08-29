@@ -76,6 +76,47 @@ static void zb_device_mgr_simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_
 /* Internal helpers                                                           */
 /* -------------------------------------------------------------------------- */
 
+static void s_configure_cluster_reports(uint16_t network_addr, uint64_t ieee,
+                                        uint8_t ep_id, uint16_t cluster_id)
+{
+	switch (cluster_id) {
+	case 0x0006:
+		zb_cluster_send_bind_req(network_addr, ieee, ep_id, cluster_id);
+		zb_cluster_send_configure_reporting(network_addr, ep_id, cluster_id,
+						    0x0000,
+						    ESP_ZB_ZCL_ATTR_TYPE_BOOL);
+		break;
+	case 0x0008:
+		zb_cluster_send_bind_req(network_addr, ieee, ep_id, cluster_id);
+		zb_cluster_send_configure_reporting(network_addr, ep_id, cluster_id,
+						    0x0000,
+						    ESP_ZB_ZCL_ATTR_TYPE_U8);
+		break;
+	case 0x0300: {
+		zb_cluster_send_bind_req(network_addr, ieee, ep_id, cluster_id);
+		static const struct {
+			uint16_t attr_id;
+			uint8_t  attr_type;
+		} color_attrs[] = {
+			{0x0000, ESP_ZB_ZCL_ATTR_TYPE_U8},
+			{0x0001, ESP_ZB_ZCL_ATTR_TYPE_U8},
+			{0x0003, ESP_ZB_ZCL_ATTR_TYPE_U16},
+			{0x0004, ESP_ZB_ZCL_ATTR_TYPE_U16},
+			{0x0007, ESP_ZB_ZCL_ATTR_TYPE_U16},
+			{0x0008, ESP_ZB_ZCL_ATTR_TYPE_U8},
+		};
+		for (size_t i = 0; i < sizeof(color_attrs) / sizeof(color_attrs[0]); i++) {
+			zb_cluster_send_configure_reporting(network_addr, ep_id, cluster_id,
+						    color_attrs[i].attr_id,
+						    color_attrs[i].attr_type);
+		}
+		break;
+	}
+	default:
+		break;
+	}
+}
+
 static esp_err_t s_save_table(void)
 {
 	size_t      len = sizeof(s_device_table);
@@ -362,8 +403,9 @@ static void zb_device_mgr_simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_
 		return;
 	}
 
+	zb_endpoint_info_t *ep = NULL;
 	if (dev->endpoint_count < ZB_MAX_EP_PER_DEVICE) {
-		zb_endpoint_info_t *ep = &dev->endpoints[dev->endpoint_count];
+		ep = &dev->endpoints[dev->endpoint_count];
 		memset(ep, 0, sizeof(zb_endpoint_info_t));
 		ep->ep_id = simple_desc->endpoint;
 
@@ -383,10 +425,27 @@ static void zb_device_mgr_simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_
 		ESP_LOGW(TAG, "Device 0x%016llX EP limit reached", ieee);
 	}
 
+	uint16_t network_addr = dev->network_addr;
+	uint8_t  new_ep_id    = 0;
+	uint8_t  cluster_count = 0;
+	uint16_t clusters[ZB_MAX_CLUSTERS_PER_EP] = {0};
+	if (ep != NULL) {
+		new_ep_id    = ep->ep_id;
+		cluster_count = ep->cluster_count;
+		memcpy(clusters, ep->clusters, sizeof(clusters));
+	}
+
 	xSemaphoreGive(s_mutex);
 
 	/* Persist outside mutex to reduce lock time */
 	s_save_table();
+
+	/* Best-effort reporting setup for standard HA clusters on this endpoint. */
+	if (ep != NULL) {
+		for (uint8_t c = 0; c < cluster_count; c++) {
+			s_configure_cluster_reports(network_addr, ieee, new_ep_id, clusters[c]);
+		}
+	}
 }
 
 void zb_device_mgr_handle_read_attr_resp(uint16_t short_addr, uint64_t ieee,

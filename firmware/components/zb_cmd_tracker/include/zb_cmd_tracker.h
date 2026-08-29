@@ -14,7 +14,8 @@ esp_err_t zb_cmd_tracker_init(void);
 
 /* Register a command for tracking. corr_id must be unique per in-flight command. */
 esp_err_t zb_cmd_tracker_register(const char *corr_id, uint64_t ieee,
-                                  uint16_t cluster_id, uint16_t attr_id,
+                                  uint8_t endpoint, uint16_t cluster_id,
+                                  uint16_t attr_id, bool is_write,
                                   bool check_value, uint32_t expected_val,
                                   uint32_t timeout_ms);
 
@@ -28,13 +29,13 @@ esp_err_t zb_cmd_tracker_register(const char *corr_id, uint64_t ieee,
  *   if (slot < 0) return ESP_ERR_NO_MEM;
  *   <acquire zigbee lock, send command>
  *   if (send_failed) { zb_cmd_tracker_release(slot); return error; }
- *   zb_cmd_tracker_commit(slot, corr_id, ...);
+ *   zb_cmd_tracker_commit(slot, corr_id, ..., is_write);
  */
 int  zb_cmd_tracker_reserve(void);
 void zb_cmd_tracker_commit(int slot, const char *corr_id, uint64_t ieee,
-                           uint16_t cluster_id, uint16_t attr_id,
-                           bool check_value, uint32_t expected_val,
-                           uint32_t timeout_ms);
+                           uint8_t endpoint, uint16_t cluster_id,
+                           uint16_t attr_id, bool is_write, bool check_value,
+                           uint32_t expected_val, uint32_t timeout_ms);
 void zb_cmd_tracker_release(int slot);
 
 /* Call from attribute report handler (e.g. on_attribute_report). */
