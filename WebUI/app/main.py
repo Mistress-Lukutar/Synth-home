@@ -76,6 +76,13 @@ def create_app() -> FastAPI:
         device_state_manager = DeviceStateManager()
         app.state.device_state_manager = device_state_manager
 
+        # One-time cleanup of all-false color_caps cached by the broken
+        # 0x4002 (ColorLoopActive) parser, so the poll re-reads 0x400A.
+        try:
+            await device_state_manager.sanitize_color_caps()
+        except Exception:
+            logger.exception("sanitize_color_caps_failed")
+
         # Hub service (stateful singleton bound to app lifespan)
         hub_service = HubService(
             event_bus=event_bus, state_manager=device_state_manager

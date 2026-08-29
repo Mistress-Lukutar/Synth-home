@@ -88,7 +88,7 @@ async def test_update_device_state_caches_static_attrs_into_endpoints():
 
     await hub._state_manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 8, 2, 10)
     await hub._state_manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 8, 3, 254)
-    await hub._state_manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 768, 0x4002, 0x31)
+    await hub._state_manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 768, 0x400A, 0x1F)
     await hub._state_manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 768, 0x400B, 250)
     await hub._state_manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 768, 0x400C, 454)
 
@@ -100,6 +100,13 @@ async def test_update_device_state_caches_static_attrs_into_endpoints():
         ep = device.endpoints[0]
         assert ep["level_min"] == 10
         assert ep["level_max"] == 254
-        assert ep["color_caps"] == {"hs": True, "xy": True, "ct": True, "color_loop": False}
+        # 0x400A bitmap 0x1F: hs | enhanced_hue | color_loop | xy | ct
+        assert ep["color_caps"] == {
+            "hs": True,
+            "enhanced_hue": True,
+            "color_loop": True,
+            "xy": True,
+            "ct": True,
+        }
         assert ep["ct_min"] == 250
         assert ep["ct_max"] == 454

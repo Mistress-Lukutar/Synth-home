@@ -62,7 +62,7 @@ async def test_apply_state_change_caches_static_attrs_in_endpoints():
 
     await manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 0x0008, 0x0002, 10)
     await manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 0x0008, 0x0003, 254)
-    await manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 0x0300, 0x4002, 0x31)
+    await manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 0x0300, 0x400A, 0x1F)
     await manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 0x0300, 0x400B, 250)
     await manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 0x0300, 0x400C, 454)
 
@@ -73,9 +73,95 @@ async def test_apply_state_change_caches_static_attrs_in_endpoints():
         ep = device.endpoints[0]
         assert ep["level_min"] == 10
         assert ep["level_max"] == 254
-        assert ep["color_caps"] == {"hs": True, "xy": True, "ct": True, "color_loop": False}
+        # 0x400A bitmap 0x1F: hs | enhanced_hue | color_loop | xy | ct
+        assert ep["color_caps"] == {
+            "hs": True,
+            "enhanced_hue": True,
+            "color_loop": True,
+            "xy": True,
+            "ct": True,
+        }
         assert ep["ct_min"] == 250
         assert ep["ct_max"] == 454
+
+
+@pytest.mark.asyncio
+async def test_apply_state_change_color_caps_zero_read_is_ignored():
+    """A zero/unreadable ColorCapabilities read means unknown, not 'no caps'."""
+    await _seed_device()
+    manager = DeviceStateManager()
+
+    await manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 0x0300, 0x400A, 0)
+
+    async with async_session() as session:
+        repo = DeviceRepository(session)
+        device = await repo.get_by_ieee("00:11:22:33:44:55:66:77")
+        assert device is not None
+        assert "color_caps" not in (device.state or {}).get("1", {})
+        assert "color_caps" not in device.endpoints[0]
+
+
+@pytest.mark.asyncio
+async def test_apply_state_change_color_loop_active_does_not_set_caps():
+    """0x4002 is ColorLoopActive (not ColorCapabilities) and must not poison caps."""
+    await _seed_device()
+    manager = DeviceStateManager()
+
+    await manager.apply_state_change("00:11:22:33:44:55:66:77", 1, 0x0300, 0x4002, 0)
+
+    async with async_session() as session:
+        repo = DeviceRepository(session)
+        device = await repo.get_by_ieee("00:11:22:33:44:55:66:77")
+        assert device is not None
+        assert "color_caps" not in (device.state or {}).get("1", {})
+        assert "color_caps" not in device.endpoints[0]
+
+
+@pytest.mark.asyncio
+async def test_sanitize_color_caps_drops_degenerate_caps():
+    await _seed_device()
+    bad_caps = {"hs": False, "xy": False, "ct": False, "color_loop": False}
+    async with async_session() as session:
+        device = await session.get(Device, "00:11:22:33:44:55:66:77")
+        device.state = {"1": {"on": True, "color_caps": dict(bad_caps)}}
+        device.endpoints = [{"id": 1, "clusters": [768], "color_caps": dict(bad_caps)}]
+        await session.commit()
+
+    manager = DeviceStateManager()
+    assert await manager.sanitize_color_caps() == 1
+
+    async with async_session() as session:
+        device = await session.get(Device, "00:11:22:33:44:55:66:77")
+        assert device.state == {"1": {"on": True}}
+        assert device.endpoints == [{"id": 1, "clusters": [768]}]
+
+    # Idempotent: a second run finds nothing left to fix.
+    assert await manager.sanitize_color_caps() == 0
+
+
+@pytest.mark.asyncio
+async def test_sanitize_color_caps_keeps_valid_caps():
+    await _seed_device()
+    good_caps = {
+        "hs": True,
+        "enhanced_hue": True,
+        "color_loop": True,
+        "xy": True,
+        "ct": True,
+    }
+    async with async_session() as session:
+        device = await session.get(Device, "00:11:22:33:44:55:66:77")
+        device.state = {"1": {"color_caps": dict(good_caps)}}
+        device.endpoints = [{"id": 1, "clusters": [768], "color_caps": dict(good_caps)}]
+        await session.commit()
+
+    manager = DeviceStateManager()
+    assert await manager.sanitize_color_caps() == 0
+
+    async with async_session() as session:
+        device = await session.get(Device, "00:11:22:33:44:55:66:77")
+        assert device.state["1"]["color_caps"] == good_caps
+        assert device.endpoints[0]["color_caps"] == good_caps
 
 
 @pytest.mark.asyncio
