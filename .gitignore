@@ -1,4 +1,5 @@
 .agents/
+.zcode/
 /build/
 /firmware/build/
 /firmware/managed_components/
