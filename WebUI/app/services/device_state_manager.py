@@ -234,12 +234,13 @@ class DeviceStateManager:
     ) -> None:
         """Handle a command_status event.
 
-        Updates liveness only. The actual attribute value is applied later via
-        ``apply_state_change``.
+        A delivered command proves liveness, so ``completed``/``delivered``
+        mark the device online. Timeouts and failures do **not** mark it
+        offline — liveness belongs to pings only (a lost Zigbee ACK must not
+        flip a powered device offline). The actual attribute value is applied
+        later via ``apply_state_change``.
         """
-        if status in ("timeout", "failed") and ieee:
-            await self.set_device_online(ieee, False)
-        elif status in ("completed", "delivered") and ieee:
+        if status in ("completed", "delivered") and ieee:
             await self.set_device_online(ieee, True)
 
         if correlation_id:
@@ -270,12 +271,42 @@ class DeviceStateManager:
             result.append(pending)
         return result
 
+    def sweep_expired(self, ttl: float = 60.0) -> int:
+        """Drop pending commands older than ``ttl`` seconds.
+
+        If the firmware event that would resolve a command is lost (no ack, no
+        state_change, no command_status), the entry would otherwise leak
+        forever. On expiry the entry is simply dropped — the online status is
+        intentionally left untouched.
+        """
+        now = datetime.now(timezone.utc)
+        expired = [
+            correlation_id
+            for correlation_id, pending in self._pending_commands.items()
+            if (now - pending["registered_at"]).total_seconds() > ttl
+        ]
+        for correlation_id in expired:
+            pending = self._pending_commands.pop(correlation_id)
+            logger.info(
+                "pending_command_expired",
+                correlation_id=correlation_id,
+                ieee=pending.get("ieee"),
+                action=pending.get("action"),
+            )
+        return len(expired)
+
     # ------------------------------------------------------------------
     # Online / liveness
     # ------------------------------------------------------------------
 
     async def set_device_online(self, ieee: str, online: bool) -> None:
-        """Update the online flag and last_seen timestamp for a device."""
+        """Update the online flag for a device.
+
+        Commits only when the flag actually changes: pings and state_change
+        events would otherwise trigger a DB write per event. ``last_seen`` is
+        refreshed on the offline→online transition; steady-state freshness is
+        kept by the periodic topology sync instead.
+        """
         if not ieee:
             return
         try:
@@ -284,15 +315,17 @@ class DeviceStateManager:
                 device = await repo.get_by_ieee(ieee)
                 if not device:
                     return
-                device.online = online
-                if online:
-                    device.last_seen = datetime.now(timezone.utc)
-                await session.commit()
-                logger.info("device_online_updated", ieee=ieee, online=online)
+                if device.online != online:
+                    device.online = online
+                    if online:
+                        device.last_seen = datetime.now(timezone.utc)
+                    await session.commit()
+                    logger.info("device_online_updated", ieee=ieee, online=online)
         except Exception:
             logger.exception("set_device_online_failed", ieee=ieee, online=online)
             return
 
+        # Keep the in-memory cache in sync even when the DB row was unchanged.
         if self._on_online_changed:
             self._on_online_changed(ieee, online)
 

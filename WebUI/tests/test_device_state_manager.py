@@ -207,7 +207,8 @@ async def test_on_command_status_updates_online_only():
 
 
 @pytest.mark.asyncio
-async def test_on_command_status_timeout_marks_offline():
+async def test_on_command_status_timeout_keeps_device_online():
+    """A command timeout must not flip the device offline — liveness belongs to pings."""
     await _seed_device()
     manager = DeviceStateManager()
 
@@ -219,7 +220,24 @@ async def test_on_command_status_timeout_marks_offline():
         repo = DeviceRepository(session)
         device = await repo.get_by_ieee("00:11:22:33:44:55:66:77")
         assert device is not None
-        assert device.online is False
+        assert device.online is True
+
+
+@pytest.mark.asyncio
+async def test_sweep_expired_drops_stale_pending_commands():
+    from datetime import datetime, timedelta, timezone
+
+    manager = DeviceStateManager()
+    manager.register_command("corr-stale", "00:11:22:33:44:55:66:77", 1, "on")
+    manager.register_command("corr-fresh", "00:11:22:33:44:55:66:77", 1, "level")
+    # Age the first entry past the TTL.
+    manager._pending_commands["corr-stale"]["registered_at"] = datetime.now(
+        timezone.utc
+    ) - timedelta(seconds=61)
+
+    assert manager.sweep_expired(ttl=60.0) == 1
+    assert manager.get_pending_command("corr-stale") is None
+    assert manager.get_pending_command("corr-fresh") is not None
 
 
 @pytest.mark.asyncio
