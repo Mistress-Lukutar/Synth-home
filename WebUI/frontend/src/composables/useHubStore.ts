@@ -178,6 +178,9 @@ function handleStateChange(data: any) {
   if (!device) return
   if (!device.state) device.state = {}
 
+  // A state_change is a sign of life (mirror of the backend hub_service rule).
+  device.online = true
+
   const changes = data.changes || []
   if (changes.length > 0) {
     for (const change of changes) {
@@ -262,16 +265,9 @@ function handleCommandStatus(data: any) {
   const status = data.status
   const ieee = data.ieee_addr || data.ieee
 
-  // command_status carries delivery/completion status and liveness only.
-  // The actual attribute values come via state_change.
-  if (ieee && (status === 'timeout' || status === 'failed')) {
-    const device = state.devices.find(d => d.ieee === ieee)
-    if (device) {
-      device.online = false
-      logEvent(`Device ${ieee} marked offline (${status})`)
-    }
-  }
-
+  // command_status carries delivery/completion status. A delivered command
+  // proves liveness; timeouts/failures must NOT flip the device offline —
+  // liveness belongs to pings and state_change only (mirrors the backend).
   if (ieee && (status === 'completed' || status === 'delivered')) {
     const device = state.devices.find(d => d.ieee === ieee)
     if (device) device.online = true
