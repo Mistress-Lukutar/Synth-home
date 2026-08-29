@@ -266,7 +266,7 @@ async function sendAndTrack(action: string, epId: number, params?: object) {
   if (!store.state.isConnected) return
   try {
     const result = await api.sendCommand(props.device.ieee, action, epId, params)
-    store.state.pendingCommands.set(result.correlation_id, {
+    store.addPendingCommand(result.correlation_id, {
       ieee: props.device.ieee,
       endpoint: epId,
       action,
@@ -296,7 +296,7 @@ async function setColorRgb(epId: number, hex: string) {
   const mode = caps.xy ? 'xy' : 'hs'
   try {
     const result = await api.sendColor(props.device.ieee, hex, mode, epId)
-    store.state.pendingCommands.set(result.correlation_id, {
+    store.addPendingCommand(result.correlation_id, {
       ieee: props.device.ieee,
       endpoint: epId,
       action: 'color',
@@ -310,7 +310,7 @@ async function setCt(epId: number, ct: number) {
   if (isPending(epId, 'color_ct')) return
   try {
     const result = await api.sendColorCt(props.device.ieee, ct, epId)
-    store.state.pendingCommands.set(result.correlation_id, {
+    store.addPendingCommand(result.correlation_id, {
       ieee: props.device.ieee,
       endpoint: epId,
       action: 'color_ct',

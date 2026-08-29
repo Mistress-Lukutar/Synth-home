@@ -66,6 +66,18 @@ const state = reactive<State>({
   refreshInterval: null,
 })
 
+function addPendingCommand(correlationId: string, cmd: PendingCommand) {
+  state.pendingCommands.set(correlationId, cmd)
+}
+
+function removePendingCommand(correlationId: string) {
+  state.pendingCommands.delete(correlationId)
+}
+
+function clearPendingCommands() {
+  state.pendingCommands.clear()
+}
+
 function logEvent(text: string) {
   const t = new Date().toLocaleTimeString()
   state.events.push({ time: t, text })
@@ -126,7 +138,7 @@ function handleAck(data: any) {
   // immediately; successful sends stay pending until confirmed.
   if (!ok) {
     logEvent(`Command ${pending.action} failed: ${error || 'unknown'}`)
-    state.pendingCommands.delete(correlationId)
+    removePendingCommand(correlationId)
   } else {
     logEvent(`Command ${pending.action} accepted`)
   }
@@ -154,7 +166,7 @@ function resolvePendingByStateChange(
       resolved = true
     }
     if (resolved) {
-      state.pendingCommands.delete(correlationId)
+      removePendingCommand(correlationId)
     }
   }
 }
@@ -270,7 +282,7 @@ function handleCommandStatus(data: any) {
   }
 
   if (status === 'timeout' || status === 'failed' || status === 'completed' || status === 'delivered') {
-    state.pendingCommands.delete(correlationId)
+    removePendingCommand(correlationId)
   }
 }
 
@@ -327,6 +339,7 @@ function stopSSE() {
     clearInterval(state.refreshInterval)
     state.refreshInterval = null
   }
+  clearPendingCommands()
   state.sseReconnectDelay = 1000
 }
 
@@ -373,6 +386,7 @@ async function disconnect() {
   state.isConnected = false
   state.currentPort = null
   state.devices = []
+  clearPendingCommands()
   stopSSE()
   logEvent('Disconnected')
 }
@@ -529,5 +543,8 @@ export function useHubStore() {
     loadPanels,
     reorderPanels,
     pollDevices,
+    addPendingCommand,
+    removePendingCommand,
+    clearPendingCommands,
   }
 }
