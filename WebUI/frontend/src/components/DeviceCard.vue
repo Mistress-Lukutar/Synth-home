@@ -61,33 +61,73 @@
 
           <!-- Color controls (cluster 0x0300 = 768) -->
           <template v-if="hasCluster(ep, 768)">
-            <!-- Hue/saturation wheel (brightness is the separate level slider) -->
-            <div
-              v-if="colorSupports(ep.id, 'hs') || colorSupports(ep.id, 'xy')"
-              class="color-wheel-row"
-            >
-              <HueSatWheel
-                v-bind="wheelHueSat(ep.id)"
-                :disabled="device.online === false || isPending(ep.id, 'color')"
-                @commit="(v) => setColorHs(ep.id, v.hue, v.sat)"
-              />
-            </div>
+            <!-- Both RGB and CT supported: tabs pick which control is shown
+                 and switch the lamp to that color mode on click -->
+            <template v-if="hasBothColorModes(ep.id)">
+              <div class="color-tabs">
+                <button
+                  class="color-tab"
+                  :class="{ active: colorTabOf(ep.id) === 'color' }"
+                  @click="switchColorTab(ep.id, 'color')"
+                >Color</button>
+                <button
+                  class="color-tab"
+                  :class="{ active: colorTabOf(ep.id) === 'temp' }"
+                  @click="switchColorTab(ep.id, 'temp')"
+                >Temperature</button>
+              </div>
 
-            <!-- Color temperature: gradient slider -->
-            <div
-              v-if="colorSupports(ep.id, 'ct') || ctRangeKnown(ep.id)"
-              class="ct-slider-row"
-            >
-              <input
-                type="range"
-                :min="getState(ep.id, 'ct_min') ?? 153"
-                :max="getState(ep.id, 'ct_max') ?? 500"
-                class="ct-slider"
-                :value="getState(ep.id, 'ct') ?? 300"
-                @change="(e) => setCt(ep.id, Number((e.target as HTMLInputElement).value))"
-                :disabled="isPending(ep.id, 'color_ct') || device.online === false"
-              />
-            </div>
+              <div v-if="colorTabOf(ep.id) === 'color'" class="color-wheel-row">
+                <HueSatWheel
+                  v-bind="wheelHueSat(ep.id)"
+                  :disabled="device.online === false || isPending(ep.id, 'color')"
+                  @commit="(v) => setColorHs(ep.id, v.hue, v.sat)"
+                />
+              </div>
+
+              <div v-else class="ct-slider-row">
+                <input
+                  type="range"
+                  :min="getState(ep.id, 'ct_min') ?? 153"
+                  :max="getState(ep.id, 'ct_max') ?? 500"
+                  class="ct-slider"
+                  :value="getState(ep.id, 'ct') ?? 300"
+                  @change="(e) => setCt(ep.id, Number((e.target as HTMLInputElement).value))"
+                  :disabled="isPending(ep.id, 'color_ct') || device.online === false"
+                />
+              </div>
+            </template>
+
+            <!-- Single color mode: show the one supported control directly -->
+            <template v-else>
+              <!-- Hue/saturation wheel (brightness is the separate level slider) -->
+              <div
+                v-if="colorSupports(ep.id, 'hs') || colorSupports(ep.id, 'xy')"
+                class="color-wheel-row"
+              >
+                <HueSatWheel
+                  v-bind="wheelHueSat(ep.id)"
+                  :disabled="device.online === false || isPending(ep.id, 'color')"
+                  @commit="(v) => setColorHs(ep.id, v.hue, v.sat)"
+                />
+              </div>
+
+              <!-- Color temperature: gradient slider -->
+              <div
+                v-if="colorSupports(ep.id, 'ct') || ctRangeKnown(ep.id)"
+                class="ct-slider-row"
+              >
+                <input
+                  type="range"
+                  :min="getState(ep.id, 'ct_min') ?? 153"
+                  :max="getState(ep.id, 'ct_max') ?? 500"
+                  class="ct-slider"
+                  :value="getState(ep.id, 'ct') ?? 300"
+                  @change="(e) => setCt(ep.id, Number((e.target as HTMLInputElement).value))"
+                  :disabled="isPending(ep.id, 'color_ct') || device.online === false"
+                />
+              </div>
+            </template>
           </template>
         </div>
       </div>
@@ -99,7 +139,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
+import { ref, reactive, watch, computed, nextTick } from 'vue'
 import { useHubStore } from '../composables/useHubStore'
 import * as api from '../api'
 import HueSatWheel from './HueSatWheel.vue'
@@ -240,6 +280,63 @@ function colorSupports(epId: number, cap: 'hs' | 'xy' | 'ct' | 'color_loop'): bo
 
 function ctRangeKnown(epId: number): boolean {
   return getState(epId, 'ct_min') !== undefined || getState(epId, 'ct_max') !== undefined
+}
+
+// Color mode tabs: shown when an endpoint supports both RGB (hs/xy) and CT,
+// so only one control occupies the card at a time.
+type ColorTab = 'color' | 'temp'
+const colorTabs = reactive<Record<number, ColorTab>>({})
+
+function hasBothColorModes(epId: number): boolean {
+  const rgb = colorSupports(epId, 'hs') || colorSupports(epId, 'xy')
+  const ct = colorSupports(epId, 'ct') || ctRangeKnown(epId)
+  return rgb && ct
+}
+
+function reportedColorTab(epId: number): ColorTab {
+  return getState(epId, 'color_mode') === 'ct' ? 'temp' : 'color'
+}
+
+function colorTabOf(epId: number): ColorTab {
+  return colorTabs[epId] ?? reportedColorTab(epId)
+}
+
+function isColorPending(epId: number): boolean {
+  return isPending(epId, 'color') || isPending(epId, 'color_ct')
+}
+
+// Follow the reported ZCL ColorMode so tabs stay truthful when the mode is
+// changed elsewhere (automation, another client). While a color switch is in
+// flight the local tab wins; the stale pre-switch report must not yank it.
+watch(
+  () => (props.device.endpoints || [])
+    .map((ep: any) => `${ep.id}=${getState(ep.id, 'color_mode') ?? ''}`)
+    .join(','),
+  () => {
+    for (const ep of props.device.endpoints || []) {
+      if (getState(ep.id, 'color_mode') === undefined) continue
+      if (isColorPending(ep.id)) continue
+      colorTabs[ep.id] = reportedColorTab(ep.id)
+    }
+  }
+)
+
+async function switchColorTab(epId: number, tab: ColorTab) {
+  if (colorTabOf(epId) === tab) return
+  colorTabs[epId] = tab
+  // Switching tabs also switches the lamp: re-apply the current color/CT so
+  // the bulb actually leaves the other color mode.
+  if (props.device.online === false || !store.state.isConnected) return
+  if (isColorPending(epId)) return
+  if (tab === 'color') {
+    const known = getState(epId, 'hue') !== undefined || getState(epId, 'sat') !== undefined ||
+      getState(epId, 'x') !== undefined || getState(epId, 'y') !== undefined
+    const v = wheelHueSat(epId)
+    // Nothing known yet: fall back to the wheel's home angle as a visible RGB color.
+    await setColorHs(epId, known ? v.hue : 0, known ? v.sat : 254)
+  } else {
+    await setCt(epId, Number(getState(epId, 'ct') ?? 300))
+  }
 }
 
 function isPending(epId: number, action: string): boolean {
@@ -422,6 +519,38 @@ async function setCt(epId: number, ct: number) {
   display: flex;
   justify-content: center;
   padding: 4px 0;
+}
+
+/* Color mode tabs (RGB / CT) */
+.color-tabs {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.color-tab {
+  background: none;
+  border: none;
+  padding: 2px 14px 8px;
+  font-size: 0.85rem;
+  font-family: inherit;
+  color: #888;
+  cursor: pointer;
+  position: relative;
+  transition: color 0.2s;
+}
+.color-tab:hover { color: #ccc; }
+.color-tab.active { color: #fff; }
+.color-tab.active::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -1px;
+  transform: translateX(-50%);
+  width: 28px;
+  height: 2px;
+  border-radius: 1px;
+  background: #00ff88;
 }
 
 /* CT slider */
