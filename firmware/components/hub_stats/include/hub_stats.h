@@ -42,6 +42,13 @@ esp_err_t hub_stats_init(void);
 void hub_stats_inc(hub_stats_id_t id);
 
 /**
+ * @brief Add a delta to a counter. Safe from any task context.
+ * @param  id     Counter to update.
+ * @param  delta  Value to add.
+ */
+void hub_stats_add(hub_stats_id_t id, uint32_t delta);
+
+/**
  * @brief  Read the current value of a counter.
  * @param  id  Counter to read.
  * @return Current counter value.

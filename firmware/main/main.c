@@ -50,49 +50,43 @@ static void on_attribute_report(uint16_t short_addr, uint64_t ieee_addr,
 	zb_cmd_tracker_on_report(ieee_addr, cluster_id, attr_id, value, type);
 	zb_device_mgr_touch_last_seen(ieee_addr);
 
-	com_event_t evt = {
-		.type = COM_EVT_STATE_CHANGE,
-	};
-	evt.payload.state_change.ieee_addr = ieee_addr;
-	evt.payload.state_change.num_changes = 1;
-
-	com_state_change_t *chg = &evt.payload.state_change.changes[0];
-	snprintf(chg->cluster, sizeof(chg->cluster), "0x%04X", cluster_id);
-	snprintf(chg->attribute, sizeof(chg->attribute), "0x%04X", attr_id);
-	chg->endpoint = endpoint;
+	com_state_change_t chg = {0};
+	snprintf(chg.cluster, sizeof(chg.cluster), "0x%04X", cluster_id);
+	snprintf(chg.attribute, sizeof(chg.attribute), "0x%04X", attr_id);
+	chg.endpoint = endpoint;
 
 	switch (type) {
 	case 0: /* u8 */
-		chg->type = 2; /* uint32 */
-		chg->value.u_val = *(const uint8_t *)value;
+		chg.type = 2; /* uint32 */
+		chg.value.u_val = *(const uint8_t *)value;
 		break;
 	case 1: /* u16 */
-		chg->type = 2; /* uint32 */
-		chg->value.u_val = *(const uint16_t *)value;
+		chg.type = 2; /* uint32 */
+		chg.value.u_val = *(const uint16_t *)value;
 		break;
 	case 2: /* u32 */
-		chg->type = 2; /* uint32 */
-		chg->value.u_val = *(const uint32_t *)value;
+		chg.type = 2; /* uint32 */
+		chg.value.u_val = *(const uint32_t *)value;
 		break;
 	case 3: /* u64 */
-		chg->type = 2; /* uint32 */
-		chg->value.u_val = (uint32_t)(*(const uint64_t *)value);
+		chg.type = 2; /* uint32 */
+		chg.value.u_val = (uint32_t)(*(const uint64_t *)value);
 		break;
 	case 4: /* bool */
-		chg->type = 0; /* bool */
-		chg->value.b_val = *(const bool *)value;
+		chg.type = 0; /* bool */
+		chg.value.b_val = *(const bool *)value;
 		break;
 	case 5: /* s16 */
-		chg->type = 1; /* int32 */
-		chg->value.i_val = *(const int16_t *)value;
+		chg.type = 1; /* int32 */
+		chg.value.i_val = *(const int16_t *)value;
 		break;
 	default:
-		chg->type = 2;
-		chg->value.u_val = 0;
+		chg.type = 2;
+		chg.value.u_val = 0;
 		break;
 	}
 
-	com_pipeline_emit(&evt);
+	com_pipeline_emit_state_change(ieee_addr, &chg);
 }
 
 static void on_read_attr_resp(uint16_t short_addr, uint64_t ieee_addr,

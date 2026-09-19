@@ -6,17 +6,26 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "esp_timer.h"
 
 #include "esp_log.h"
 #include "cJSON.h"
 #include "hub_stats.h"
 
-#define COM_PIPELINE_QUEUE_SIZE  32
+/*
+ * Queue must absorb report bursts without stalling the Zigbee stack task
+ * (emit is non-blocking); 32 was too shallow during a refresh storm.
+ */
+#define COM_PIPELINE_QUEUE_SIZE  128
 #define COM_PIPELINE_TASK_STACK  4096
 #define COM_PIPELINE_TASK_PRIO   5
-#define COM_PIPELINE_EMIT_TIMEOUT_MS 100
 #define COM_MAX_SUBSCRIBERS      4
+
+/* Per-device state_change coalescing window (see com_pipeline_emit_state_change). */
+#define COM_STATE_COALESCE_MS    50
+#define COM_COALESCE_SLOTS       32
 
 static const char *TAG = "com_pipeline";
 
@@ -29,6 +38,106 @@ typedef struct {
 } subscriber_t;
 
 static subscriber_t s_subscribers[COM_MAX_SUBSCRIBERS] = {0};
+
+/* -------------------------------------------------------------------------- */
+/* State-change coalescing                                                    */
+/* -------------------------------------------------------------------------- */
+
+typedef struct {
+	uint64_t           ieee_addr;
+	com_state_change_t changes[COM_MAX_CHANGES];
+	uint8_t            num_changes;
+	esp_timer_handle_t flush_timer;
+	bool               timer_armed;
+} coalesce_slot_t;
+
+static coalesce_slot_t s_coalesce[COM_COALESCE_SLOTS];
+static SemaphoreHandle_t s_coalesce_mutex = NULL;
+
+static void coalesce_flush_locked(coalesce_slot_t *slot)
+{
+	if (slot->num_changes == 0) {
+		return;
+	}
+	if (slot->timer_armed && slot->flush_timer != NULL) {
+		esp_timer_stop(slot->flush_timer);
+		slot->timer_armed = false;
+	}
+
+	com_event_t evt = { .type = COM_EVT_STATE_CHANGE };
+	evt.payload.state_change.ieee_addr = slot->ieee_addr;
+	evt.payload.state_change.num_changes = slot->num_changes;
+	for (uint8_t i = 0; i < slot->num_changes; i++) {
+		evt.payload.state_change.changes[i] = slot->changes[i];
+	}
+	if (slot->num_changes > 1) {
+		hub_stats_add(HUB_STATS_STATE_COALESCED, slot->num_changes - 1);
+	}
+	slot->num_changes = 0;
+
+	com_pipeline_emit(&evt);
+}
+
+static void coalesce_flush_timer_cb(void *arg)
+{
+	coalesce_slot_t *slot = (coalesce_slot_t *)arg;
+	if (s_coalesce_mutex == NULL) {
+		return;
+	}
+	xSemaphoreTake(s_coalesce_mutex, portMAX_DELAY);
+	coalesce_flush_locked(slot);
+	xSemaphoreGive(s_coalesce_mutex);
+}
+
+void com_pipeline_emit_state_change(uint64_t ieee, const com_state_change_t *change)
+{
+	if (s_coalesce_mutex == NULL || change == NULL) {
+		return;
+	}
+
+	xSemaphoreTake(s_coalesce_mutex, portMAX_DELAY);
+
+	coalesce_slot_t *slot = NULL;
+	for (int i = 0; i < COM_COALESCE_SLOTS; i++) {
+		if (s_coalesce[i].num_changes > 0 && s_coalesce[i].ieee_addr == ieee) {
+			slot = &s_coalesce[i];
+			break;
+		}
+	}
+	if (slot == NULL) {
+		for (int i = 0; i < COM_COALESCE_SLOTS; i++) {
+			if (s_coalesce[i].num_changes == 0) {
+				slot = &s_coalesce[i];
+				break;
+			}
+		}
+	}
+	if (slot == NULL) {
+		/* No free slot: fall back to an uncoalesced event. */
+		com_event_t evt = { .type = COM_EVT_STATE_CHANGE };
+		evt.payload.state_change.ieee_addr = ieee;
+		evt.payload.state_change.num_changes = 1;
+		evt.payload.state_change.changes[0] = *change;
+		xSemaphoreGive(s_coalesce_mutex);
+		com_pipeline_emit(&evt);
+		return;
+	}
+
+	slot->ieee_addr = ieee;
+	slot->changes[slot->num_changes++] = *change;
+	if (slot->num_changes >= COM_MAX_CHANGES) {
+		coalesce_flush_locked(slot);
+		xSemaphoreGive(s_coalesce_mutex);
+		return;
+	}
+
+	if (!slot->timer_armed && slot->flush_timer != NULL) {
+		esp_timer_start_once(slot->flush_timer,
+				     (uint64_t)COM_STATE_COALESCE_MS * 1000ULL);
+		slot->timer_armed = true;
+	}
+	xSemaphoreGive(s_coalesce_mutex);
+}
 
 static void format_ieee_addr(char *buf, size_t buf_size, uint64_t ieee_addr)
 {
@@ -218,17 +327,37 @@ esp_err_t com_pipeline_init(void)
 		return ESP_FAIL;
 	}
 
+	s_coalesce_mutex = xSemaphoreCreateMutex();
+	if (s_coalesce_mutex == NULL) {
+		vQueueDelete(s_com_queue);
+		s_com_queue = NULL;
+		return ESP_FAIL;
+	}
+
+	for (int i = 0; i < COM_COALESCE_SLOTS; i++) {
+		esp_timer_create_args_t timer_args = {
+			.callback = coalesce_flush_timer_cb,
+			.arg = &s_coalesce[i],
+			.name = "com_coalesce",
+		};
+		if (esp_timer_create(&timer_args, &s_coalesce[i].flush_timer) != ESP_OK) {
+			s_coalesce[i].flush_timer = NULL;
+		}
+	}
+
 	BaseType_t ret = xTaskCreate(com_pipeline_task, "com_pipeline_task",
 				     COM_PIPELINE_TASK_STACK, NULL,
 				     COM_PIPELINE_TASK_PRIO, &s_com_task);
 	if (ret != pdPASS) {
 		vQueueDelete(s_com_queue);
 		s_com_queue = NULL;
+		vSemaphoreDelete(s_coalesce_mutex);
+		s_coalesce_mutex = NULL;
 		ESP_LOGE(TAG, "Failed to create task");
 		return ESP_FAIL;
 	}
 
-	ESP_LOGI(TAG, "Initialized");
+	ESP_LOGI(TAG, "Initialized (queue depth %d)", COM_PIPELINE_QUEUE_SIZE);
 	return ESP_OK;
 }
 
@@ -243,7 +372,12 @@ esp_err_t com_pipeline_emit(const com_event_t *event)
 		return ESP_ERR_INVALID_STATE;
 	}
 
-	if (xQueueSend(s_com_queue, event, pdMS_TO_TICKS(COM_PIPELINE_EMIT_TIMEOUT_MS)) != pdTRUE) {
+	/*
+	 * Never block: emits come from the Zigbee stack task where a 100 ms
+	 * queue wait would stall the whole radio stack and snowball lock
+	 * contention into the command senders.
+	 */
+	if (xQueueSend(s_com_queue, event, 0) != pdTRUE) {
 		ESP_LOGW(TAG, "Queue full, event dropped");
 		hub_stats_inc(HUB_STATS_QUEUE_FULL_DROPS);
 		return ESP_FAIL;

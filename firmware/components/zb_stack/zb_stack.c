@@ -124,7 +124,7 @@ static esp_err_t zb_attribute_reporting_handler(const esp_zb_zcl_report_attr_mes
     uint8_t  type       = zb_type_to_simple_type(message->attribute.data.type);
     const void *value   = message->attribute.data.value;
 
-    ESP_LOGI(TAG, "Attribute report from 0x%04x, ep %d, cluster 0x%04x, attr 0x%04x, type %d",
+    ESP_LOGD(TAG, "Attribute report from 0x%04x, ep %d, cluster 0x%04x, attr 0x%04x, type %d",
              short_addr, src_ep, cluster_id, attr_id, type);
 
     if (s_report_cb) {
@@ -164,7 +164,7 @@ static esp_err_t zb_read_attr_resp_handler(const esp_zb_zcl_cmd_read_attr_resp_m
             uint8_t type = zb_type_to_simple_type(var->attribute.data.type);
             const void *value = var->attribute.data.value;
 
-            ESP_LOGI(TAG, "Read attr resp from 0x%04x, ep %d, cluster 0x%04x, attr 0x%04x, type %d",
+            ESP_LOGD(TAG, "Read attr resp from 0x%04x, ep %d, cluster 0x%04x, attr 0x%04x, type %d",
                      short_addr, src_ep, cluster_id, attr_id, type);
 
             if (s_read_attr_cb && ieee != 0) {

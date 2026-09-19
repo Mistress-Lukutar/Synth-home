@@ -17,12 +17,23 @@ esp_err_t zb_cluster_read_attr(uint64_t ieee, uint8_t ep_id, uint16_t cluster_id
 #define TAG "zb_cmd_tracker"
 #define ZB_CMD_TRACKER_SLOTS 32
 #define ZB_CMD_TRACKER_CHECK_MS 1000
-#define ZB_CMD_TRACKER_PROBE_MS 400
+/*
+ * First probe 1 s after the send: an immediate report from the device
+ * resolves the slot before the probe fires, so only unresolved commands
+ * pay for a read-back.
+ */
+#define ZB_CMD_TRACKER_PROBE_MS 1000
 #define ZB_CMD_TRACKER_PROBE_RETRY_MS 1500
+/* Hard cap of read-back probes per command (congestion guard). */
+#define ZB_CMD_TRACKER_PROBE_MAX 3
+/* Emissions buffered per tracker pass while the mutex is held. */
+#define ZB_CMD_TRACKER_EMIT_MAX 8
 
 typedef struct {
 	bool active;
 	bool reserved;          /* slot reserved but not yet committed */
+	bool delivered;         /* ZCL Default Response SUCCESS seen */
+	uint8_t probe_count;    /* read-back probes already sent */
 	char corr_id[COM_CORR_ID_LEN];
 	uint64_t ieee;
 	uint8_t endpoint;
@@ -36,6 +47,15 @@ typedef struct {
 	uint32_t nonce;
 	uint32_t probe_nonce;
 } slot_t;
+
+/* Status emission buffered while the tracker mutex is held; sent after unlock. */
+typedef struct {
+	char corr_id[COM_CORR_ID_LEN];
+	com_cmd_status_t status;
+	char reason[32];
+	uint64_t ieee;
+	uint16_t cluster_id;
+} pending_emit_t;
 
 static slot_t s_slots[ZB_CMD_TRACKER_SLOTS];
 static SemaphoreHandle_t s_mutex = NULL;
@@ -57,6 +77,37 @@ static void emit_status(const char *corr_id, com_cmd_status_t status, const char
 	evt.payload.command_status.ieee_addr = ieee;
 	evt.payload.command_status.cluster_id = cluster;
 	com_pipeline_emit(&evt);
+}
+
+static void buffer_emit(pending_emit_t *out, int *out_len, const slot_t *slot,
+			com_cmd_status_t status, const char *reason)
+{
+	if (*out_len >= ZB_CMD_TRACKER_EMIT_MAX) {
+		/* Overrun of the local buffer (cannot happen with one command
+		 * per device in flight): fall back to emitting directly. */
+		emit_status(slot->corr_id, status, reason, slot->ieee, slot->cluster_id);
+		return;
+	}
+	pending_emit_t *dst = &out[(*out_len)++];
+	strncpy(dst->corr_id, slot->corr_id, COM_CORR_ID_LEN - 1);
+	dst->corr_id[COM_CORR_ID_LEN - 1] = '\0';
+	dst->status = status;
+	if (reason) {
+		strncpy(dst->reason, reason, sizeof(dst->reason) - 1);
+		dst->reason[sizeof(dst->reason) - 1] = '\0';
+	} else {
+		dst->reason[0] = '\0';
+	}
+	dst->ieee = slot->ieee;
+	dst->cluster_id = slot->cluster_id;
+}
+
+static void flush_emits(pending_emit_t *emits, int len)
+{
+	for (int i = 0; i < len; i++) {
+		emit_status(emits[i].corr_id, emits[i].status, emits[i].reason,
+			    emits[i].ieee, emits[i].cluster_id);
+	}
 }
 
 static uint32_t extract_u32(const void *value, uint8_t type)
@@ -99,10 +150,25 @@ static void probe_timer_cb(void *arg)
 		xSemaphoreGive(s_mutex);
 		return;
 	}
+
+	/*
+	 * Probe caps (congestion guard): at most PROBE_MAX reads per command,
+	 * and after a ZCL Default Response DELIVERED at most one confirming
+	 * read. Without the caps a 9-command scene added 50-80 extra on-air
+	 * reads while the refresh storm was already saturating the bulbs.
+	 */
+	if (slot->probe_count >= ZB_CMD_TRACKER_PROBE_MAX ||
+	    (slot->delivered && slot->probe_count >= 1)) {
+		clear_probe_timer_locked(slot - s_slots);
+		xSemaphoreGive(s_mutex);
+		return;
+	}
+
 	uint64_t ieee = slot->ieee;
 	uint8_t endpoint = slot->endpoint;
 	uint16_t cluster_id = slot->cluster_id;
 	uint16_t attr_id = slot->probe_attr_id;
+	slot->probe_count++;
 
 	/*
 	 * Keep probing until the slot resolves or expires. Dimmers ramp to the
@@ -113,12 +179,16 @@ static void probe_timer_cb(void *arg)
 	 * read is in flight simply makes the next callback a no-op.
 	 */
 	if (slot->probe_timer != NULL) {
-		esp_err_t arm_err = esp_timer_start_once(
-			slot->probe_timer,
-			(uint64_t)ZB_CMD_TRACKER_PROBE_RETRY_MS * 1000ULL);
-		if (arm_err != ESP_OK) {
-			ESP_LOGW(TAG, "Failed to re-arm probe timer: %s",
-				 esp_err_to_name(arm_err));
+		bool rearm = slot->probe_count < ZB_CMD_TRACKER_PROBE_MAX &&
+			     !(slot->delivered && slot->probe_count >= 1);
+		if (rearm) {
+			esp_err_t arm_err = esp_timer_start_once(
+				slot->probe_timer,
+				(uint64_t)ZB_CMD_TRACKER_PROBE_RETRY_MS * 1000ULL);
+			if (arm_err != ESP_OK) {
+				ESP_LOGW(TAG, "Failed to re-arm probe timer: %s",
+					 esp_err_to_name(arm_err));
+			}
 		}
 	}
 	xSemaphoreGive(s_mutex);
@@ -137,16 +207,19 @@ static void tracker_task(void *arg)
 	while (1) {
 		vTaskDelay(pdMS_TO_TICKS(ZB_CMD_TRACKER_CHECK_MS));
 		int64_t now = esp_timer_get_time() / 1000;
+		pending_emit_t emits[ZB_CMD_TRACKER_EMIT_MAX];
+		int emit_len = 0;
 		xSemaphoreTake(s_mutex, portMAX_DELAY);
 		for (int i = 0; i < ZB_CMD_TRACKER_SLOTS; i++) {
 			if (s_slots[i].active && !s_slots[i].reserved && now >= s_slots[i].deadline_ms) {
-				emit_status(s_slots[i].corr_id, CMD_STATUS_TIMEOUT, "no_response",
-					    s_slots[i].ieee, s_slots[i].cluster_id);
+				buffer_emit(emits, &emit_len, &s_slots[i],
+					    CMD_STATUS_TIMEOUT, "no_response");
 				clear_probe_timer_locked(i);
 				s_slots[i].active = false;
 			}
 		}
 		xSemaphoreGive(s_mutex);
+		flush_emits(emits, emit_len);
 	}
 }
 
@@ -320,6 +393,8 @@ void zb_cmd_tracker_on_report(uint64_t ieee, uint16_t cluster_id, uint16_t attr_
 		return;
 	}
 	uint32_t val = extract_u32(value, type);
+	pending_emit_t emits[ZB_CMD_TRACKER_EMIT_MAX];
+	int emit_len = 0;
 	xSemaphoreTake(s_mutex, portMAX_DELAY);
 	for (int i = 0; i < ZB_CMD_TRACKER_SLOTS; i++) {
 		if (!s_slots[i].active || s_slots[i].reserved) {
@@ -337,12 +412,12 @@ void zb_cmd_tracker_on_report(uint64_t ieee, uint16_t cluster_id, uint16_t attr_
 		if (s_slots[i].check_value && val != s_slots[i].expected_val) {
 			continue;
 		}
-		emit_status(s_slots[i].corr_id, CMD_STATUS_COMPLETED, NULL,
-			    ieee, cluster_id);
+		buffer_emit(emits, &emit_len, &s_slots[i], CMD_STATUS_COMPLETED, NULL);
 		clear_probe_timer_locked(i);
 		s_slots[i].active = false;
 	}
 	xSemaphoreGive(s_mutex);
+	flush_emits(emits, emit_len);
 }
 
 void zb_cmd_tracker_on_default_resp(uint64_t ieee, uint16_t cluster_id,
@@ -352,6 +427,8 @@ void zb_cmd_tracker_on_default_resp(uint64_t ieee, uint16_t cluster_id,
 	if (!s_mutex) {
 		return;
 	}
+	pending_emit_t emits[ZB_CMD_TRACKER_EMIT_MAX];
+	int emit_len = 0;
 	xSemaphoreTake(s_mutex, portMAX_DELAY);
 	for (int i = 0; i < ZB_CMD_TRACKER_SLOTS; i++) {
 		if (!s_slots[i].active || s_slots[i].reserved) {
@@ -364,14 +441,16 @@ void zb_cmd_tracker_on_default_resp(uint64_t ieee, uint16_t cluster_id,
 			continue;
 		}
 		if (zcl_status == ESP_ZB_ZCL_STATUS_SUCCESS) {
-			emit_status(s_slots[i].corr_id, CMD_STATUS_DELIVERED,
-				    "default_resp_ok", ieee, cluster_id);
+			s_slots[i].delivered = true;
+			buffer_emit(emits, &emit_len, &s_slots[i],
+				    CMD_STATUS_DELIVERED, "default_resp_ok");
 		} else {
-			emit_status(s_slots[i].corr_id, CMD_STATUS_FAILED,
-				    "zcl_error", ieee, cluster_id);
+			buffer_emit(emits, &emit_len, &s_slots[i],
+				    CMD_STATUS_FAILED, "zcl_error");
 			clear_probe_timer_locked(i);
 			s_slots[i].active = false;
 		}
 	}
 	xSemaphoreGive(s_mutex);
+	flush_emits(emits, emit_len);
 }

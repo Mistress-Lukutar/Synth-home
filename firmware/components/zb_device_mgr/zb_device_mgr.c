@@ -471,24 +471,21 @@ void zb_device_mgr_handle_read_attr_resp(uint16_t short_addr, uint64_t ieee,
 	}
 
 	/* Emit state change for any read attr response */
-	com_event_t evt = { .type = COM_EVT_STATE_CHANGE };
-	evt.payload.state_change.ieee_addr = ieee;
-	evt.payload.state_change.num_changes = 1;
-	com_state_change_t *chg = &evt.payload.state_change.changes[0];
-	snprintf(chg->cluster, sizeof(chg->cluster), "0x%04X", cluster_id);
-	snprintf(chg->attribute, sizeof(chg->attribute), "0x%04X", attr_id);
-	chg->endpoint = endpoint;
+	com_state_change_t chg = {0};
+	snprintf(chg.cluster, sizeof(chg.cluster), "0x%04X", cluster_id);
+	snprintf(chg.attribute, sizeof(chg.attribute), "0x%04X", attr_id);
+	chg.endpoint = endpoint;
 
 	switch (type) {
-	case 0: chg->type = 2; chg->value.u_val = *(const uint8_t *)value; break;
-	case 1: chg->type = 2; chg->value.u_val = *(const uint16_t *)value; break;
-	case 2: chg->type = 2; chg->value.u_val = *(const uint32_t *)value; break;
-	case 3: chg->type = 2; chg->value.u_val = (uint32_t)(*(const uint64_t *)value); break;
-	case 4: chg->type = 0; chg->value.b_val = *(const bool *)value; break;
-	case 5: chg->type = 1; chg->value.i_val = *(const int16_t *)value; break;
-	default: chg->type = 2; chg->value.u_val = 0; break;
+	case 0: chg.type = 2; chg.value.u_val = *(const uint8_t *)value; break;
+	case 1: chg.type = 2; chg.value.u_val = *(const uint16_t *)value; break;
+	case 2: chg.type = 2; chg.value.u_val = *(const uint32_t *)value; break;
+	case 3: chg.type = 2; chg.value.u_val = (uint32_t)(*(const uint64_t *)value); break;
+	case 4: chg.type = 0; chg.value.b_val = *(const bool *)value; break;
+	case 5: chg.type = 1; chg.value.i_val = *(const int16_t *)value; break;
+	default: chg.type = 2; chg.value.u_val = 0; break;
 	}
-	com_pipeline_emit(&evt);
+	com_pipeline_emit_state_change(ieee, &chg);
 }
 
 const zb_endpoint_info_t *zb_device_mgr_find_ep_with_cluster(uint64_t ieee,

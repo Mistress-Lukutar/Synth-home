@@ -56,6 +56,16 @@ void hub_stats_inc(hub_stats_id_t id)
 	taskEXIT_CRITICAL(&s_counters_mux);
 }
 
+void hub_stats_add(hub_stats_id_t id, uint32_t delta)
+{
+	if (id >= HUB_STATS_COUNT || delta == 0) {
+		return;
+	}
+	taskENTER_CRITICAL(&s_counters_mux);
+	s_counters[id] += delta;
+	taskEXIT_CRITICAL(&s_counters_mux);
+}
+
 uint32_t hub_stats_get(hub_stats_id_t id)
 {
 	if (id >= HUB_STATS_COUNT) {

@@ -95,6 +95,14 @@ esp_err_t com_pipeline_init(void);
 esp_err_t com_pipeline_emit(const com_event_t *event);
 esp_err_t com_pipeline_subscribe(com_pipeline_cb_t cb, void *user_data);
 
+/*
+ * Buffer a per-attribute change for COM_STATE_COALESCE_MS and emit one
+ * aggregated COM_EVT_STATE_CHANGE per device. Reports and read responses
+ * arrive in bursts; merging them cuts the egress (and host-side DB commits)
+ * by 5-10x. Safe from any task context; never blocks.
+ */
+void com_pipeline_emit_state_change(uint64_t ieee, const com_state_change_t *change);
+
 /* Serialize event to newly allocated JSON string. Caller must cJSON_free() it. */
 char *com_pipeline_event_to_json(const com_event_t *event);
 

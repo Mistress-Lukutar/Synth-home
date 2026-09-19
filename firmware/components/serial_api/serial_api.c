@@ -4,7 +4,9 @@
 #include <stdlib.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
+#include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "cJSON.h"
 
@@ -16,7 +18,27 @@
 #include "hub_stats.h"
 
 static const char *TAG = "serial_api";
-static SemaphoreHandle_t s_stdout_mutex = NULL;
+
+/*
+ * Transport layout (stability rework):
+ *
+ *   USB Serial/JTAG driver (RX ring buffer 2048 B, ISR-fed)
+ *     -> rx_task:      line assembly + JSON parse, never blocks on Zigbee
+ *     -> cmd queue 16: serial_cmd_msg_t (parsed cJSON tree)
+ *     -> worker task:  executes commands (takes the Zigbee lock)
+ *     -> tx queue 64:  serialized JSON lines (char*)
+ *     -> tx_task:      printf under the stdout mutex
+ *
+ * The log console stays in no-driver mode; JSON and ESP_LOG output both go
+ * through the same vfs write path, so whole lines remain atomic and the
+ * newline-framed host parser only ever sees complete lines.
+ */
+#define SERIAL_RX_RING_BYTES  2048
+#define SERIAL_TX_RING_BYTES  256 /* unused: JSON TX goes through stdio */
+#define SERIAL_CMD_QUEUE_LEN  16
+#define SERIAL_TX_QUEUE_LEN   64
+#define SERIAL_LINE_MAX       512
+#define SERIAL_TASK_STACK     4096
 
 #define MAX_PENDING_PINGS 32
 
@@ -26,10 +48,19 @@ typedef struct {
 	uint64_t ieee;
 } pending_ping_t;
 
+typedef struct {
+	cJSON *root; /* parsed command tree, owned by the worker */
+} serial_cmd_msg_t;
+
 static pending_ping_t s_pending_pings[MAX_PENDING_PINGS];
+
+static SemaphoreHandle_t s_stdout_mutex = NULL;
+static QueueHandle_t s_cmd_queue = NULL;
+static QueueHandle_t s_tx_queue = NULL;
 
 /* Forward declarations */
 static void send_json_line(cJSON *root);
+static void handle_rx_line(char *line);
 
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
@@ -98,24 +129,27 @@ static void emit_ping_result(uint64_t ieee, const char *corr_id, bool online)
 static void send_json_line(cJSON *root)
 {
 	char *out = cJSON_PrintUnformatted(root);
-	if (out) {
-		if (s_stdout_mutex) {
-			xSemaphoreTake(s_stdout_mutex, portMAX_DELAY);
-		}
-		/* Leading newline: ESP-IDF log output shares this console and a
-		 * bootloader log tail may sit unprefixed in the CDC buffer; the
-		 * extra frame keeps JSON lines parseable after such glue. */
-		printf("\n%s\n", out);
-		fflush(stdout);
-		if (s_stdout_mutex) {
-			xSemaphoreGive(s_stdout_mutex);
-		}
+	if (!out) {
+		return;
+	}
+	if (s_tx_queue == NULL || xQueueSend(s_tx_queue, &out, 0) != pdTRUE) {
+		ESP_LOGW(TAG, "TX queue full, JSON line dropped");
+		hub_stats_inc(HUB_STATS_TX_DROPPED);
 		cJSON_free(out);
 	}
 }
 
+static void send_simple_error(const char *message)
+{
+	cJSON *err = cJSON_CreateObject();
+	cJSON_AddStringToObject(err, "evt", "error");
+	cJSON_AddStringToObject(err, "message", message);
+	send_json_line(err);
+	cJSON_Delete(err);
+}
+
 /* -------------------------------------------------------------------------- */
-/* Command handlers                                                           */
+/* Command handlers (worker task context)                                     */
 /* -------------------------------------------------------------------------- */
 
 static void handle_list(void)
@@ -198,39 +232,35 @@ static void ack_missing_field(const char *evt_name, const char *ieee_str,
 
 static void handle_on(const char *ieee_str, uint8_t ep_id, const char *corr_id)
 {
-	ESP_LOGI(TAG, "handle_on %s ep=%u", ieee_str, ep_id);
+	ESP_LOGD(TAG, "handle_on %s ep=%u", ieee_str, ep_id);
 	uint64_t ieee = parse_ieee(ieee_str);
 	esp_err_t err = zb_cluster_send_on_off(ieee, ZB_CMD_ON_OFF_ON, corr_id, ep_id);
-	ESP_LOGI(TAG, "handle_on result %s", esp_err_to_name(err));
 	ack_cmd("on_ack", ieee_str, err, corr_id);
 }
 
 static void handle_off(const char *ieee_str, uint8_t ep_id, const char *corr_id)
 {
-	ESP_LOGI(TAG, "handle_off %s ep=%u", ieee_str, ep_id);
+	ESP_LOGD(TAG, "handle_off %s ep=%u", ieee_str, ep_id);
 	uint64_t ieee = parse_ieee(ieee_str);
 	esp_err_t err = zb_cluster_send_on_off(ieee, ZB_CMD_ON_OFF_OFF, corr_id, ep_id);
-	ESP_LOGI(TAG, "handle_off result %s", esp_err_to_name(err));
 	ack_cmd("off_ack", ieee_str, err, corr_id);
 }
 
 static void handle_toggle(const char *ieee_str, uint8_t ep_id, const char *corr_id)
 {
-	ESP_LOGI(TAG, "handle_toggle %s ep=%u", ieee_str, ep_id);
+	ESP_LOGD(TAG, "handle_toggle %s ep=%u", ieee_str, ep_id);
 	uint64_t ieee = parse_ieee(ieee_str);
 	esp_err_t err = zb_cluster_send_on_off(ieee, ZB_CMD_ON_OFF_TOGGLE, corr_id, ep_id);
-	ESP_LOGI(TAG, "handle_toggle result %s", esp_err_to_name(err));
 	ack_cmd("toggle_ack", ieee_str, err, corr_id);
 }
 
 static void handle_level(const char *ieee_str, uint8_t level,
                            uint16_t transition, uint8_t ep_id, const char *corr_id)
 {
-	ESP_LOGI(TAG, "handle_level %s -> %d trans=%u ep=%u",
+	ESP_LOGD(TAG, "handle_level %s -> %d trans=%u ep=%u",
 		 ieee_str, level, transition, ep_id);
 	uint64_t ieee = parse_ieee(ieee_str);
 	esp_err_t err = zb_cluster_send_level(ieee, level, transition, corr_id, ep_id);
-	ESP_LOGI(TAG, "handle_level result %s", esp_err_to_name(err));
 	ack_cmd("level_ack", ieee_str, err, corr_id);
 }
 
@@ -238,7 +268,7 @@ static void handle_color(const char *ieee_str, const char *hex,
                            const char *mode, uint16_t transition, uint8_t ep_id,
                            const char *corr_id)
 {
-	ESP_LOGI(TAG, "handle_color %s -> %s mode=%s trans=%u ep=%u",
+	ESP_LOGD(TAG, "handle_color %s -> %s mode=%s trans=%u ep=%u",
 		 ieee_str, hex, mode ? mode : "null", transition, ep_id);
 	uint64_t ieee = parse_ieee(ieee_str);
 
@@ -269,7 +299,6 @@ static void handle_color(const char *ieee_str, const char *hex,
 		color_utils_rgb_to_xy(r, g, b, &x, &y);
 		err = zb_cluster_send_color_xy(ieee, x, y, transition, corr_id, ep->ep_id);
 	}
-	ESP_LOGI(TAG, "handle_color result %s", esp_err_to_name(err));
 	ack_cmd("color_ack", ieee_str, err, corr_id);
 }
 
@@ -277,7 +306,7 @@ static void handle_color_ct(const char *ieee_str, uint16_t mireds,
                               uint16_t transition, uint8_t ep_id,
                               const char *corr_id)
 {
-	ESP_LOGI(TAG, "handle_color_ct %s -> %u trans=%u ep=%u",
+	ESP_LOGD(TAG, "handle_color_ct %s -> %u trans=%u ep=%u",
 		 ieee_str, mireds, transition, ep_id);
 	uint64_t ieee = parse_ieee(ieee_str);
 
@@ -293,7 +322,6 @@ static void handle_color_ct(const char *ieee_str, uint16_t mireds,
 	}
 
 	esp_err_t err = zb_cluster_send_color_ct(ieee, mireds, transition, corr_id, ep->ep_id);
-	ESP_LOGI(TAG, "handle_color_ct result %s", esp_err_to_name(err));
 	ack_cmd("color_ct_ack", ieee_str, err, corr_id);
 }
 
@@ -301,7 +329,7 @@ static void handle_read_attr(const char *ieee_str, uint8_t ep_id,
                              const char *cluster_str, const char *attr_str,
                              const char *corr_id)
 {
-	ESP_LOGI(TAG, "handle_read_attr %s ep=%u cluster=%s attr=%s",
+	ESP_LOGD(TAG, "handle_read_attr %s ep=%u cluster=%s attr=%s",
 		 ieee_str, ep_id, cluster_str, attr_str);
 	uint64_t ieee = parse_ieee(ieee_str);
 	uint16_t cluster_id = (uint16_t)strtoul(cluster_str, NULL, 0);
@@ -323,7 +351,7 @@ static void handle_permit(uint8_t duration)
 
 static void handle_ping(const char *ieee_str, const char *corr_id)
 {
-	ESP_LOGI(TAG, "handle_ping %s", ieee_str);
+	ESP_LOGD(TAG, "handle_ping %s", ieee_str);
 	uint64_t ieee = parse_ieee(ieee_str);
 	register_pending_ping(corr_id, ieee);
 	esp_err_t err = zb_cluster_ping(ieee, corr_id);
@@ -334,7 +362,115 @@ static void handle_ping(const char *ieee_str, const char *corr_id)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Event subscriber                                                           */
+/* Command dispatch (worker task)                                             */
+/* -------------------------------------------------------------------------- */
+
+static void dispatch_command(cJSON *root)
+{
+	const char *cmd_str = "";
+	cJSON *cmd = cJSON_GetObjectItem(root, "cmd");
+	if (cJSON_IsString(cmd)) {
+		cmd_str = cmd->valuestring;
+	}
+
+	const char *corr_id = NULL;
+	cJSON *corr_item = cJSON_GetObjectItem(root, "correlation_id");
+	if (cJSON_IsString(corr_item)) {
+		corr_id = corr_item->valuestring;
+	}
+
+	uint8_t ep_id = 0;
+	cJSON *ep_item = cJSON_GetObjectItem(root, "endpoint");
+	if (cJSON_IsNumber(ep_item)) {
+		ep_id = (uint8_t)ep_item->valuedouble;
+	}
+
+	uint16_t transition = 10; /* 1 second default */
+	cJSON *trans_item = cJSON_GetObjectItem(root, "transition");
+	if (cJSON_IsNumber(trans_item)) {
+		transition = (uint16_t)trans_item->valuedouble;
+	}
+
+	if (strcmp(cmd_str, "list") == 0) {
+		handle_list();
+	} else if (strcmp(cmd_str, "on") == 0) {
+		cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
+		if (cJSON_IsString(ieee)) handle_on(ieee->valuestring, ep_id, corr_id);
+		else ack_missing_field("on_ack", NULL, corr_id, "ieee");
+	} else if (strcmp(cmd_str, "off") == 0) {
+		cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
+		if (cJSON_IsString(ieee)) handle_off(ieee->valuestring, ep_id, corr_id);
+		else ack_missing_field("off_ack", NULL, corr_id, "ieee");
+	} else if (strcmp(cmd_str, "toggle") == 0) {
+		cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
+		if (cJSON_IsString(ieee)) handle_toggle(ieee->valuestring, ep_id, corr_id);
+		else ack_missing_field("toggle_ack", NULL, corr_id, "ieee");
+	} else if (strcmp(cmd_str, "level") == 0) {
+		cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
+		cJSON *lvl = cJSON_GetObjectItem(root, "level");
+		if (cJSON_IsString(ieee) && cJSON_IsNumber(lvl)) {
+			handle_level(ieee->valuestring, (uint8_t)lvl->valuedouble,
+				     transition, ep_id, corr_id);
+		} else {
+			ack_missing_field("level_ack",
+					  cJSON_IsString(ieee) ? ieee->valuestring : NULL,
+					  corr_id, "level");
+		}
+	} else if (strcmp(cmd_str, "color") == 0) {
+		cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
+		cJSON *hex = cJSON_GetObjectItem(root, "hex");
+		cJSON *mode = cJSON_GetObjectItem(root, "mode");
+		if (cJSON_IsString(ieee) && cJSON_IsString(hex) && cJSON_IsString(mode)) {
+			handle_color(ieee->valuestring, hex->valuestring,
+				     mode->valuestring, transition, ep_id, corr_id);
+		} else {
+			ack_missing_field("color_ack",
+					  cJSON_IsString(ieee) ? ieee->valuestring : NULL,
+					  corr_id, cJSON_IsString(hex) ? "mode" : "hex");
+		}
+	} else if (strcmp(cmd_str, "color_ct") == 0) {
+		cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
+		cJSON *ct = cJSON_GetObjectItem(root, "ct");
+		if (cJSON_IsString(ieee) && cJSON_IsNumber(ct)) {
+			handle_color_ct(ieee->valuestring,
+					(uint16_t)ct->valuedouble, transition, ep_id, corr_id);
+		} else {
+			ack_missing_field("color_ct_ack",
+					  cJSON_IsString(ieee) ? ieee->valuestring : NULL,
+					  corr_id, "ct");
+		}
+	} else if (strcmp(cmd_str, "read_attr") == 0) {
+		cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
+		cJSON *cluster = cJSON_GetObjectItem(root, "cluster");
+		cJSON *attr = cJSON_GetObjectItem(root, "attribute");
+		if (cJSON_IsString(ieee) && cJSON_IsString(cluster) && cJSON_IsString(attr)) {
+			handle_read_attr(ieee->valuestring, ep_id,
+					 cluster->valuestring, attr->valuestring, corr_id);
+		} else {
+			ack_missing_field("read_attr_ack",
+					  cJSON_IsString(ieee) ? ieee->valuestring : NULL,
+					  corr_id,
+					  cJSON_IsString(cluster) ? "attribute" : "cluster");
+		}
+	} else if (strcmp(cmd_str, "ping") == 0) {
+		cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
+		cJSON *corr = cJSON_GetObjectItem(root, "correlation_id");
+		if (cJSON_IsString(ieee)) {
+			handle_ping(ieee->valuestring,
+				    cJSON_IsString(corr) ? corr->valuestring : NULL);
+		}
+	} else if (strcmp(cmd_str, "permit") == 0) {
+		cJSON *dur = cJSON_GetObjectItem(root, "duration");
+		if (cJSON_IsNumber(dur)) {
+			handle_permit((uint8_t)dur->valuedouble);
+		}
+	} else {
+		send_simple_error("unknown_cmd");
+	}
+}
+
+/* -------------------------------------------------------------------------- */
+/* Event subscriber (com_pipeline task)                                       */
 /* -------------------------------------------------------------------------- */
 
 static void serial_event_handler(const com_event_t *evt, void *user_data)
@@ -453,174 +589,128 @@ static void serial_event_handler(const com_event_t *evt, void *user_data)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Serial task                                                                */
+/* Tasks                                                                      */
 /* -------------------------------------------------------------------------- */
 
-static bool read_line(char *buf, size_t buf_len)
-{
-	size_t i = 0;
-	while (i < buf_len - 1) {
-		int c = getchar();
-		if (c == EOF || c == 0) {
-			vTaskDelay(1); /* 1 tick = 10 ms @ 100 Hz */
-			continue;
-		}
-		if (c == '\n' || c == '\r') {
-			if (i == 0) {
-				continue; /* skip empty lines */
-			}
-			buf[i] = '\0';
-			return true;
-		}
-		buf[i++] = (char)c;
-	}
-	buf[i] = '\0';
-	return true;
-}
-
-static void serial_task(void *arg)
+/* RX: drain the driver ring buffer, assemble and parse lines. Never touches
+ * the Zigbee stack, so the USB-CDC buffer always drains even while the worker
+ * is blocked sending a command. */
+static void rx_task(void *arg)
 {
 	(void)arg;
-	char line[256];
+	uint8_t chunk[128];
+	char line[SERIAL_LINE_MAX];
+	size_t len = 0;
+	bool overflow = false;
 
-	setvbuf(stdin, NULL, _IONBF, 0);
+	while (1) {
+		int n = usb_serial_jtag_read_bytes(chunk, sizeof(chunk),
+						   pdMS_TO_TICKS(100));
+		if (n < 0) {
+			/* Driver not installed or in a bad state; avoid a tight loop. */
+			vTaskDelay(pdMS_TO_TICKS(100));
+			continue;
+		}
+		for (int i = 0; i < n; i++) {
+			char c = (char)chunk[i];
+			if (c == '\n') {
+				if (overflow) {
+					overflow = false;
+					len = 0;
+					hub_stats_inc(HUB_STATS_INVALID_JSON);
+					send_simple_error("invalid_json");
+					continue;
+				}
+				if (len > 0) {
+					line[len] = '\0';
+					handle_rx_line(line);
+					len = 0;
+				}
+			} else if (c == '\r') {
+				continue; /* host may send CRLF */
+			} else if (len + 1 < sizeof(line)) {
+				line[len++] = c;
+			} else {
+				overflow = true;
+			}
+		}
+	}
+}
+
+static void cmd_worker_task(void *arg)
+{
+	(void)arg;
+	serial_cmd_msg_t msg;
+
+	while (1) {
+		if (xQueueReceive(s_cmd_queue, &msg, portMAX_DELAY) == pdTRUE) {
+			dispatch_command(msg.root);
+			cJSON_Delete(msg.root);
+		}
+	}
+}
+
+static void tx_task(void *arg)
+{
+	(void)arg;
+	char *line = NULL;
+
 	setvbuf(stdout, NULL, _IONBF, 0);
 
 	while (1) {
-		if (read_line(line, sizeof(line))) {
-			if (strlen(line) == 0) {
-				continue;
+		if (xQueueReceive(s_tx_queue, &line, portMAX_DELAY) == pdTRUE) {
+			if (s_stdout_mutex) {
+				xSemaphoreTake(s_stdout_mutex, portMAX_DELAY);
 			}
-
-			cJSON *root = cJSON_Parse(line);
-			if (!root) {
-				ESP_LOGW(TAG, "Failed to parse JSON line: '%s'", line);
-				hub_stats_inc(HUB_STATS_INVALID_JSON);
-				cJSON *err = cJSON_CreateObject();
-				cJSON_AddStringToObject(err, "evt", "error");
-				cJSON_AddStringToObject(err, "message", "invalid_json");
-				send_json_line(err);
-				cJSON_Delete(err);
-				continue;
+			/* Leading newline: ESP-IDF log output shares this console and a
+			 * bootloader log tail may sit unprefixed in the CDC buffer; the
+			 * extra frame keeps JSON lines parseable after such glue. */
+			printf("\n%s\n", line);
+			fflush(stdout);
+			if (s_stdout_mutex) {
+				xSemaphoreGive(s_stdout_mutex);
 			}
-
-			cJSON *cmd = cJSON_GetObjectItem(root, "cmd");
-			if (!cJSON_IsString(cmd)) {
-				cJSON_Delete(root);
-				cJSON *err = cJSON_CreateObject();
-				cJSON_AddStringToObject(err, "evt", "error");
-				cJSON_AddStringToObject(err, "message", "missing_cmd");
-				send_json_line(err);
-				cJSON_Delete(err);
-				continue;
-			}
-
-			const char *cmd_str = cmd->valuestring;
-			hub_stats_inc(HUB_STATS_CMDS_RECEIVED);
-
-			const char *corr_id = NULL;
-			cJSON *corr_item = cJSON_GetObjectItem(root, "correlation_id");
-			if (cJSON_IsString(corr_item)) {
-				corr_id = corr_item->valuestring;
-			}
-
-			uint8_t ep_id = 0;
-			cJSON *ep_item = cJSON_GetObjectItem(root, "endpoint");
-			if (cJSON_IsNumber(ep_item)) {
-				ep_id = (uint8_t)ep_item->valuedouble;
-			}
-
-			uint16_t transition = 10; /* 1 second default */
-			cJSON *trans_item = cJSON_GetObjectItem(root, "transition");
-			if (cJSON_IsNumber(trans_item)) {
-				transition = (uint16_t)trans_item->valuedouble;
-			}
-
-			if (strcmp(cmd_str, "list") == 0) {
-				handle_list();
-			} else if (strcmp(cmd_str, "on") == 0) {
-				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
-				if (cJSON_IsString(ieee)) handle_on(ieee->valuestring, ep_id, corr_id);
-				else ack_missing_field("on_ack", NULL, corr_id, "ieee");
-			} else if (strcmp(cmd_str, "off") == 0) {
-				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
-				if (cJSON_IsString(ieee)) handle_off(ieee->valuestring, ep_id, corr_id);
-				else ack_missing_field("off_ack", NULL, corr_id, "ieee");
-			} else if (strcmp(cmd_str, "toggle") == 0) {
-				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
-				if (cJSON_IsString(ieee)) handle_toggle(ieee->valuestring, ep_id, corr_id);
-				else ack_missing_field("toggle_ack", NULL, corr_id, "ieee");
-			} else if (strcmp(cmd_str, "level") == 0) {
-				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
-				cJSON *lvl = cJSON_GetObjectItem(root, "level");
-				if (cJSON_IsString(ieee) && cJSON_IsNumber(lvl)) {
-					handle_level(ieee->valuestring, (uint8_t)lvl->valuedouble,
-						     transition, ep_id, corr_id);
-				} else {
-					ack_missing_field("level_ack",
-							  cJSON_IsString(ieee) ? ieee->valuestring : NULL,
-							  corr_id, "level");
-				}
-			} else if (strcmp(cmd_str, "color") == 0) {
-				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
-				cJSON *hex = cJSON_GetObjectItem(root, "hex");
-				cJSON *mode = cJSON_GetObjectItem(root, "mode");
-				if (cJSON_IsString(ieee) && cJSON_IsString(hex) && cJSON_IsString(mode)) {
-					handle_color(ieee->valuestring, hex->valuestring,
-						     mode->valuestring, transition, ep_id, corr_id);
-				} else {
-					ack_missing_field("color_ack",
-							  cJSON_IsString(ieee) ? ieee->valuestring : NULL,
-							  corr_id, cJSON_IsString(hex) ? "mode" : "hex");
-				}
-			} else if (strcmp(cmd_str, "color_ct") == 0) {
-				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
-				cJSON *ct = cJSON_GetObjectItem(root, "ct");
-				if (cJSON_IsString(ieee) && cJSON_IsNumber(ct)) {
-					handle_color_ct(ieee->valuestring,
-						(uint16_t)ct->valuedouble, transition, ep_id, corr_id);
-				} else {
-					ack_missing_field("color_ct_ack",
-							  cJSON_IsString(ieee) ? ieee->valuestring : NULL,
-							  corr_id, "ct");
-				}
-			} else if (strcmp(cmd_str, "read_attr") == 0) {
-				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
-				cJSON *cluster = cJSON_GetObjectItem(root, "cluster");
-				cJSON *attr = cJSON_GetObjectItem(root, "attribute");
-				if (cJSON_IsString(ieee) && cJSON_IsString(cluster) && cJSON_IsString(attr)) {
-					handle_read_attr(ieee->valuestring, ep_id,
-						 cluster->valuestring, attr->valuestring, corr_id);
-				} else {
-					ack_missing_field("read_attr_ack",
-							  cJSON_IsString(ieee) ? ieee->valuestring : NULL,
-							  corr_id,
-							  cJSON_IsString(cluster) ? "attribute" : "cluster");
-				}
-			} else if (strcmp(cmd_str, "ping") == 0) {
-				cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
-				cJSON *corr = cJSON_GetObjectItem(root, "correlation_id");
-				if (cJSON_IsString(ieee)) {
-					handle_ping(ieee->valuestring,
-						    cJSON_IsString(corr) ? corr->valuestring : NULL);
-				}
-			} else if (strcmp(cmd_str, "permit") == 0) {
-				cJSON *dur = cJSON_GetObjectItem(root, "duration");
-				if (cJSON_IsNumber(dur)) {
-					handle_permit((uint8_t)dur->valuedouble);
-				}
-			} else {
-				cJSON *err = cJSON_CreateObject();
-				cJSON_AddStringToObject(err, "evt", "error");
-				cJSON_AddStringToObject(err, "message", "unknown_cmd");
-				send_json_line(err);
-				cJSON_Delete(err);
-			}
-
-			cJSON_Delete(root);
-		} else {
-			vTaskDelay(pdMS_TO_TICKS(10));
+			cJSON_free(line);
 		}
+	}
+}
+
+/* -------------------------------------------------------------------------- */
+/* RX line ingestion                                                          */
+/* -------------------------------------------------------------------------- */
+
+static void handle_rx_line(char *line)
+{
+	cJSON *root = cJSON_Parse(line);
+	if (!root) {
+		ESP_LOGW(TAG, "Failed to parse JSON line: '%s'", line);
+		hub_stats_inc(HUB_STATS_INVALID_JSON);
+		send_simple_error("invalid_json");
+		return;
+	}
+
+	cJSON *cmd = cJSON_GetObjectItem(root, "cmd");
+	if (!cJSON_IsString(cmd)) {
+		cJSON_Delete(root);
+		send_simple_error("missing_cmd");
+		return;
+	}
+	hub_stats_inc(HUB_STATS_CMDS_RECEIVED);
+
+	serial_cmd_msg_t msg = { .root = root };
+	if (xQueueSend(s_cmd_queue, &msg, 0) != pdTRUE) {
+		ESP_LOGW(TAG, "Command queue full, dropping '%s'", cmd->valuestring);
+		/* Negative ack so the host command does not hang until its TTL. */
+		cJSON *err = cJSON_CreateObject();
+		cJSON_AddStringToObject(err, "evt", "error");
+		cJSON_AddStringToObject(err, "message", "busy");
+		cJSON *corr = cJSON_GetObjectItem(root, "correlation_id");
+		if (cJSON_IsString(corr)) {
+			cJSON_AddStringToObject(err, "correlation_id", corr->valuestring);
+		}
+		send_json_line(err);
+		cJSON_Delete(err);
+		cJSON_Delete(root);
 	}
 }
 
@@ -630,17 +720,57 @@ static void serial_task(void *arg)
 
 esp_err_t serial_api_init(void)
 {
-	ESP_LOGI(TAG, "Starting USB Serial API task");
+	ESP_LOGI(TAG, "Starting USB Serial API tasks");
+
 	s_stdout_mutex = xSemaphoreCreateMutex();
 	if (s_stdout_mutex == NULL) {
 		return ESP_ERR_NO_MEM;
 	}
 	memset(s_pending_pings, 0, sizeof(s_pending_pings));
-	com_pipeline_subscribe(serial_event_handler, NULL);
-	BaseType_t ret = xTaskCreate(serial_task, "serial_api", 4096, NULL, 5, NULL);
-	if (ret != pdPASS) {
+
+	/*
+	 * The console VFS stays in no-driver mode (direct FIFO writes), so this
+	 * is the only driver install on the peripheral; the 2 KB RX ring buffer
+	 * replaces the 256-byte console default that silently dropped bytes
+	 * during command bursts.
+	 */
+	usb_serial_jtag_driver_config_t usj_cfg = {
+		.rx_buffer_size = SERIAL_RX_RING_BYTES,
+		.tx_buffer_size = SERIAL_TX_RING_BYTES,
+	};
+	esp_err_t err = usb_serial_jtag_driver_install(&usj_cfg);
+	if (err != ESP_OK) {
+		ESP_LOGE(TAG, "usb_serial_jtag driver install failed: %s",
+			 esp_err_to_name(err));
 		vSemaphoreDelete(s_stdout_mutex);
 		s_stdout_mutex = NULL;
+		return err;
+	}
+
+	s_cmd_queue = xQueueCreate(SERIAL_CMD_QUEUE_LEN, sizeof(serial_cmd_msg_t));
+	s_tx_queue = xQueueCreate(SERIAL_TX_QUEUE_LEN, sizeof(char *));
+	if (s_cmd_queue == NULL || s_tx_queue == NULL) {
+		ESP_LOGE(TAG, "Failed to create serial queues");
+		if (s_cmd_queue) vQueueDelete(s_cmd_queue);
+		if (s_tx_queue) vQueueDelete(s_tx_queue);
+		s_cmd_queue = NULL;
+		s_tx_queue = NULL;
+		vSemaphoreDelete(s_stdout_mutex);
+		s_stdout_mutex = NULL;
+		return ESP_ERR_NO_MEM;
+	}
+
+	com_pipeline_subscribe(serial_event_handler, NULL);
+
+	BaseType_t ok = xTaskCreate(rx_task, "serial_rx", SERIAL_TASK_STACK, NULL, 6, NULL);
+	if (ok == pdPASS) {
+		ok = xTaskCreate(cmd_worker_task, "serial_cmd", SERIAL_TASK_STACK, NULL, 5, NULL);
+	}
+	if (ok == pdPASS) {
+		ok = xTaskCreate(tx_task, "serial_tx", SERIAL_TASK_STACK, NULL, 5, NULL);
+	}
+	if (ok != pdPASS) {
+		ESP_LOGE(TAG, "Failed to create serial tasks");
 		return ESP_ERR_NO_MEM;
 	}
 	return ESP_OK;
