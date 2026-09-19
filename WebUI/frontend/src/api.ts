@@ -40,7 +40,7 @@ export const readAttr = (ieee: string, endpoint: number | undefined, cluster: st
     body: JSON.stringify({ endpoint, cluster, attribute })
   })
 
-export const readAttrBatch = (items: { ieee: string; endpoint?: number; cluster: string; attribute: string }[]) =>
+export const readAttrBatch = (items: { ieee: string; endpoint?: number; cluster: string; attribute: string; attributes?: string[] }[]) =>
   api<{correlation_id: string; status: string}[]>('/api/devices/read-attr-batch', {
     method: 'POST',
     body: JSON.stringify(items)

@@ -48,7 +48,7 @@ interface State {
   evtSource: EventSource | null
   sseReconnectTimer: ReturnType<typeof setTimeout> | null
   refreshingDevices: boolean
-  refreshInterval: ReturnType<typeof setInterval> | null
+  pollTimer: ReturnType<typeof setTimeout> | null
 }
 
 const state = reactive<State>({
@@ -63,8 +63,13 @@ const state = reactive<State>({
   evtSource: null,
   sseReconnectTimer: null,
   refreshingDevices: false,
-  refreshInterval: null,
+  pollTimer: null,
 })
+
+/* Attribute polling: reporting pushes changes, so a slow paced poll is only
+ * a fallback. Base 60 s with jitter so browsers do not sync up. */
+const POLL_BASE_MS = 60000
+const POLL_JITTER_MS = 15000
 
 function addPendingCommand(correlationId: string, cmd: PendingCommand) {
   state.pendingCommands.set(correlationId, cmd)
@@ -89,11 +94,6 @@ function handleSSEMessage(msg: any) {
     logEvent('Hub connected event')
   } else if (msg.type === 'disconnected') {
     logEvent('Hub disconnected event')
-  } else if (msg.type === 'hub_serial') {
-    const direction = msg.direction === 'tx' ? '→ TX' : '← RX'
-    const payload = msg.payload || {}
-    const pretty = JSON.stringify(payload, null, 2).substring(0, 600)
-    logEvent(`${direction}\n${pretty}`)
   } else if (msg.type === 'hub_message') {
     const data = msg.data || {}
     const evt = data.evt || data.event || 'message'
@@ -114,6 +114,9 @@ function handleSSEMessage(msg: any) {
     }
     if (evt === 'ping_result') {
       handlePingResult(data)
+    }
+    if (evt === 'error') {
+      logEvent(`Hub error: ${data.message || 'unknown'}`)
     }
   } else if (msg.type === 'panel_output') {
     const { panel_id, node_id, value } = msg
@@ -336,9 +339,9 @@ function stopSSE() {
     state.evtSource.close()
     state.evtSource = null
   }
-  if (state.refreshInterval) {
-    clearInterval(state.refreshInterval)
-    state.refreshInterval = null
+  if (state.pollTimer) {
+    clearTimeout(state.pollTimer)
+    state.pollTimer = null
   }
   clearPendingCommands()
   state.sseReconnectDelay = 1000
@@ -354,6 +357,17 @@ async function refreshPorts(): Promise<string[]> {
   }
 }
 
+function scheduleNextPoll() {
+  if (state.pollTimer) clearTimeout(state.pollTimer)
+  const delay = POLL_BASE_MS + Math.random() * POLL_JITTER_MS
+  state.pollTimer = setTimeout(async () => {
+    state.pollTimer = null
+    if (!state.isConnected) return
+    await refreshDevices()
+    if (state.isConnected) scheduleNextPoll()
+  }, delay)
+}
+
 async function connect(port: string): Promise<boolean> {
   try {
     const data = await api.connectPort(port)
@@ -364,11 +378,7 @@ async function connect(port: string): Promise<boolean> {
       startSSE()
       await loadDevices()      // quick cache from DB
       await refreshDevices()   // sync with hub and poll attributes
-      if (!state.refreshInterval) {
-        state.refreshInterval = setInterval(async () => {
-          await refreshDevices()
-        }, 30000)
-      }
+      scheduleNextPoll()
       return true
     } else {
       logEvent(data.error || 'Connection failed')
@@ -431,11 +441,7 @@ async function restoreConnection() {
       await loadDevices()   // quick cache from DB
       // Bring state in sync with the hub (includes attribute poll).
       setTimeout(() => refreshDevices(), 300)
-      if (!state.refreshInterval) {
-        state.refreshInterval = setInterval(async () => {
-          await refreshDevices()
-        }, 30000)
-      }
+      scheduleNextPoll()
     }
   } catch {
     // stay disconnected
@@ -479,46 +485,40 @@ function _isStaticCached(ep: any, cluster: string, attribute: string): boolean {
 
 async function pollDevices() {
   if (!state.isConnected) return
-  logEvent('Polling device attributes...')
-  const items: { ieee: string; endpoint?: number; cluster: string; attribute: string }[] = []
+  // Devices with in-flight commands are skipped: the commands themselves
+  // (and the probe reads behind them) carry fresher state than a poll.
+  const busyIeees = new Set<string>()
+  for (const p of state.pendingCommands.values()) busyIeees.add(p.ieee)
+
+  const items: { ieee: string; endpoint?: number; cluster: string; attribute: string; attributes?: string[] }[] = []
   for (const device of state.devices) {
     if (device.online === false) continue
+    if (busyIeees.has(device.ieee)) continue
     const endpoints = device.endpoints || []
     for (const ep of endpoints) {
       const epId = ep.id
       const clusters = ep.clusters || []
+      // One multi-attribute read per cluster: a full color refresh is a
+      // single ZCL frame instead of 10-14 individual reads.
       if (clusters.includes(6)) {
-        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0006', attribute: '0x0000' })
+        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0006', attribute: '0x0000', attributes: ['0x0000'] })
       }
       if (clusters.includes(8)) {
-        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0008', attribute: '0x0000' })
-        if (!_isStaticCached(ep, '0x0008', '0x0002')) {
-          items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0008', attribute: '0x0002' })
-        }
-        if (!_isStaticCached(ep, '0x0008', '0x0003')) {
-          items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0008', attribute: '0x0003' })
-        }
+        const levelAttrs = ['0x0000']
+        if (!_isStaticCached(ep, '0x0008', '0x0002')) levelAttrs.push('0x0002')
+        if (!_isStaticCached(ep, '0x0008', '0x0003')) levelAttrs.push('0x0003')
+        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0008', attribute: '0x0000', attributes: levelAttrs })
       }
       if (clusters.includes(768)) {
-        if (!_isStaticCached(ep, '0x0300', '0x400A')) {
-          items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x400A' })
-        }
-        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0008' })
-        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0000' })
-        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0001' })
-        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0003' })
-        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0004' })
-        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0007' })
-        if (!_isStaticCached(ep, '0x0300', '0x400B')) {
-          items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x400B' })
-        }
-        if (!_isStaticCached(ep, '0x0300', '0x400C')) {
-          items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x400C' })
-        }
+        const colorAttrs = ['0x0008', '0x0000', '0x0001', '0x0003', '0x0004', '0x0007']
+        if (!_isStaticCached(ep, '0x0300', '0x400A')) colorAttrs.push('0x400A')
+        if (!_isStaticCached(ep, '0x0300', '0x400B')) colorAttrs.push('0x400B')
+        if (!_isStaticCached(ep, '0x0300', '0x400C')) colorAttrs.push('0x400C')
+        items.push({ ieee: device.ieee, endpoint: epId, cluster: '0x0300', attribute: '0x0008', attributes: colorAttrs })
       }
     }
     if (endpoints.length === 0) {
-      items.push({ ieee: device.ieee, endpoint: 1, cluster: '0x0006', attribute: '0x0000' })
+      items.push({ ieee: device.ieee, endpoint: 1, cluster: '0x0006', attribute: '0x0000', attributes: ['0x0000'] })
     }
   }
   if (items.length > 0) {
