@@ -1,5 +1,9 @@
 #include <string.h>
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "zb_clusters.h"
 #include "zb_device_mgr.h"
 #include "zb_stack.h"
@@ -12,9 +16,79 @@
 
 static const char *TAG = "zb_clusters";
 
+/*
+ * Per-device airtime pacing: cheap bulbs queue/process ZCL frames serially,
+ * so bursts to one device cause MAC retries and lost frames. Every sender
+ * reserves a >= ZB_TX_PACE_MS gap to the previous frame for the same device.
+ */
+#define ZB_TX_PACE_MS    100
+#define ZB_TX_PACE_SLOTS 16
+
+typedef struct {
+	uint64_t ieee;
+	int64_t last_tx_ms;
+} zb_tx_pace_slot_t;
+
+static zb_tx_pace_slot_t s_pace_slots[ZB_TX_PACE_SLOTS];
+static SemaphoreHandle_t s_pace_mutex = NULL;
+
 /* -------------------------------------------------------------------------- */
 /* Internal helpers                                                           */
 /* -------------------------------------------------------------------------- */
+
+esp_err_t zb_clusters_init(void)
+{
+	if (s_pace_mutex != NULL) {
+		return ESP_OK;
+	}
+	s_pace_mutex = xSemaphoreCreateMutex();
+	if (s_pace_mutex == NULL) {
+		return ESP_ERR_NO_MEM;
+	}
+	memset(s_pace_slots, 0, sizeof(s_pace_slots));
+	return ESP_OK;
+}
+
+static void pace_air_time(uint64_t ieee)
+{
+	if (s_pace_mutex == NULL) {
+		return;
+	}
+
+	int64_t wait_ms = 0;
+	xSemaphoreTake(s_pace_mutex, portMAX_DELAY);
+	zb_tx_pace_slot_t *slot = NULL;
+	for (int i = 0; i < ZB_TX_PACE_SLOTS; i++) {
+		if (s_pace_slots[i].ieee == ieee && s_pace_slots[i].last_tx_ms != 0) {
+			slot = &s_pace_slots[i];
+			break;
+		}
+	}
+	if (slot == NULL) {
+		for (int i = 0; i < ZB_TX_PACE_SLOTS; i++) {
+			if (s_pace_slots[i].last_tx_ms == 0) {
+				slot = &s_pace_slots[i];
+				slot->ieee = ieee;
+				slot->last_tx_ms = 1; /* claimed below */
+				break;
+			}
+		}
+	}
+	if (slot != NULL) {
+		int64_t now_ms = esp_timer_get_time() / 1000;
+		wait_ms = ZB_TX_PACE_MS - (now_ms - slot->last_tx_ms);
+		if (wait_ms < 0) {
+			wait_ms = 0;
+		}
+		/* Claim the slot before sleeping so concurrent senders queue up. */
+		slot->last_tx_ms = now_ms + wait_ms;
+	}
+	xSemaphoreGive(s_pace_mutex);
+
+	if (wait_ms > 0) {
+		vTaskDelay(pdMS_TO_TICKS((uint32_t)wait_ms));
+	}
+}
 
 static void emit_command_failed(const char *corr_id, const char *error,
                                 const char *message)
@@ -148,6 +222,8 @@ esp_err_t zb_cluster_send_on_off(uint64_t ieee, uint8_t cmd_id,
 		return ESP_ERR_NO_MEM;
 	}
 
+	pace_air_time(ieee);
+
 	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for ON/OFF");
 		emit_command_failed(corr_id, "ZIGBEE_LOCK_TIMEOUT", "Zigbee stack busy");
@@ -180,7 +256,7 @@ esp_err_t zb_cluster_send_on_off(uint64_t ieee, uint8_t cmd_id,
 
 esp_err_t zb_cluster_send_level(uint64_t ieee, uint8_t level,
                                 uint16_t transition, const char *corr_id,
-                                uint8_t ep_id)
+                                uint8_t ep_id, bool with_on_off)
 {
 	const zb_device_record_t *dev;
 	const zb_endpoint_info_t *ep;
@@ -188,17 +264,6 @@ esp_err_t zb_cluster_send_level(uint64_t ieee, uint8_t level,
 	if (ret != ESP_OK) {
 		return ret;
 	}
-
-	esp_zb_zcl_move_to_level_cmd_t cmd_req = {
-		.zcl_basic_cmd = {
-			.dst_addr_u.addr_short = dev->network_addr,
-			.dst_endpoint = ep->ep_id,
-			.src_endpoint = 1,
-		},
-		.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
-		.level = level,
-		.transition_time = transition,
-	};
 
 	int slot = zb_cmd_tracker_reserve();
 	if (slot < 0) {
@@ -208,13 +273,57 @@ esp_err_t zb_cluster_send_level(uint64_t ieee, uint8_t level,
 		return ESP_ERR_NO_MEM;
 	}
 
+	pace_air_time(ieee);
+
 	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for Level");
 		emit_command_failed(corr_id, "ZIGBEE_LOCK_TIMEOUT", "Zigbee stack busy");
 		zb_cmd_tracker_release(slot);
 		return ESP_FAIL;
 	}
-	uint8_t status = esp_zb_zcl_level_move_to_level_cmd_req(&cmd_req);
+
+	uint8_t status = 0xFF;
+	if (with_on_off) {
+		/*
+		 * MoveToLevelWithOnOff (Level cluster cmd 0x04): the bulb
+		 * applies the level while turning on, closing the "level
+		 * ignored while off" window of separate On + MoveToLevel.
+		 * The compat API has no wrapper, so send the cluster-specific
+		 * command directly: payload = level u8 + transition u16 LE.
+		 */
+		uint8_t payload[3] = {
+			level,
+			(uint8_t)(transition & 0xFF),
+			(uint8_t)(transition >> 8),
+		};
+		esp_zb_zcl_custom_cluster_cmd_t cmd_req = {
+			.zcl_basic_cmd = {
+				.dst_addr_u.addr_short = dev->network_addr,
+				.dst_endpoint = ep->ep_id,
+				.src_endpoint = 1,
+			},
+			.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
+			.profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+			.cluster_id = 0x0008,
+			.custom_cmd_id = 0x04,
+			.data.type = ESP_ZB_ZCL_ATTR_TYPE_SET,
+			.data.size = sizeof(payload),
+			.data.value = payload,
+		};
+		status = esp_zb_zcl_custom_cluster_cmd_req(&cmd_req);
+	} else {
+		esp_zb_zcl_move_to_level_cmd_t cmd_req = {
+			.zcl_basic_cmd = {
+				.dst_addr_u.addr_short = dev->network_addr,
+				.dst_endpoint = ep->ep_id,
+				.src_endpoint = 1,
+			},
+			.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
+			.level = level,
+			.transition_time = transition,
+		};
+		status = esp_zb_zcl_level_move_to_level_cmd_req(&cmd_req);
+	}
 	esp_zb_lock_release();
 	if (status == 0xFF) {
 		ESP_LOGE(TAG, "Failed to send Level command");
@@ -260,6 +369,8 @@ esp_err_t zb_cluster_send_color_hs(uint64_t ieee, uint8_t hue, uint8_t sat,
 				    "No free command tracking slots");
 		return ESP_ERR_NO_MEM;
 	}
+
+	pace_air_time(ieee);
 
 	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for Color HS");
@@ -314,6 +425,8 @@ esp_err_t zb_cluster_send_color_xy(uint64_t ieee, uint16_t x, uint16_t y,
 		return ESP_ERR_NO_MEM;
 	}
 
+	pace_air_time(ieee);
+
 	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for Color XY");
 		emit_command_failed(corr_id, "ZIGBEE_LOCK_TIMEOUT", "Zigbee stack busy");
@@ -365,6 +478,8 @@ esp_err_t zb_cluster_send_color_ct(uint64_t ieee, uint16_t mireds,
 		return ESP_ERR_NO_MEM;
 	}
 
+	pace_air_time(ieee);
+
 	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for Color CT");
 		emit_command_failed(corr_id, "ZIGBEE_LOCK_TIMEOUT", "Zigbee stack busy");
@@ -387,9 +502,11 @@ esp_err_t zb_cluster_send_color_ct(uint64_t ieee, uint16_t mireds,
 	return ESP_OK;
 }
 
-static esp_err_t s_cluster_read_attr(uint64_t ieee, uint8_t ep_id,
-                                     uint16_t cluster_id, uint16_t attr_id,
-                                     const char *corr_id, bool silent)
+static esp_err_t s_cluster_read_attrs(uint64_t ieee, uint8_t ep_id,
+                                      uint16_t cluster_id,
+                                      const uint16_t *attr_ids,
+                                      uint8_t attr_count, const char *corr_id,
+                                      bool silent)
 {
 	const zb_device_record_t *dev;
 	const zb_endpoint_info_t *ep;
@@ -397,8 +514,17 @@ static esp_err_t s_cluster_read_attr(uint64_t ieee, uint8_t ep_id,
 	if (ret != ESP_OK) {
 		return ret;
 	}
+	if (attr_ids == NULL || attr_count == 0) {
+		emit_command_failed(corr_id, "INVALID_ARG", "No attributes to read");
+		return ESP_ERR_INVALID_ARG;
+	}
 
-	uint16_t attr = attr_id;
+	/* The stack copies the ids when sending; a local copy keeps the
+	 * payload alive for the duration of the locked send. */
+	uint16_t attrs[ZB_READ_ATTRS_MAX];
+	uint8_t count = attr_count > ZB_READ_ATTRS_MAX ? ZB_READ_ATTRS_MAX : attr_count;
+	memcpy(attrs, attr_ids, count * sizeof(uint16_t));
+
 	esp_zb_zcl_read_attr_cmd_t read_req = {
 		.zcl_basic_cmd = {
 			.dst_addr_u.addr_short = dev->network_addr,
@@ -407,8 +533,8 @@ static esp_err_t s_cluster_read_attr(uint64_t ieee, uint8_t ep_id,
 		},
 		.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
 		.clusterID = cluster_id,
-		.attr_number = 1,
-		.attr_field = &attr,
+		.attr_number = count,
+		.attr_field = attrs,
 	};
 
 	int slot = -1;
@@ -421,6 +547,8 @@ static esp_err_t s_cluster_read_attr(uint64_t ieee, uint8_t ep_id,
 			return ESP_ERR_NO_MEM;
 		}
 	}
+
+	pace_air_time(ieee);
 
 	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for read attr");
@@ -439,8 +567,8 @@ static esp_err_t s_cluster_read_attr(uint64_t ieee, uint8_t ep_id,
 	}
 
 	if (silent) {
-		zb_cmd_tracker_commit(slot, corr_id, ieee, ep->ep_id, cluster_id, attr_id,
-				      false, false, 0, ZB_PING_TIMEOUT_MS);
+		zb_cmd_tracker_commit(slot, corr_id, ieee, ep->ep_id, cluster_id,
+				      attrs[0], false, false, 0, ZB_PING_TIMEOUT_MS);
 	}
 
 	return ESP_OK;
@@ -450,13 +578,23 @@ esp_err_t zb_cluster_read_attr(uint64_t ieee, uint8_t ep_id,
                                uint16_t cluster_id, uint16_t attr_id,
                                const char *corr_id)
 {
-	return s_cluster_read_attr(ieee, ep_id, cluster_id, attr_id, corr_id, false);
+	return s_cluster_read_attrs(ieee, ep_id, cluster_id, &attr_id, 1,
+				    corr_id, false);
+}
+
+esp_err_t zb_cluster_read_attrs(uint64_t ieee, uint8_t ep_id,
+                                uint16_t cluster_id, const uint16_t *attr_ids,
+                                uint8_t attr_count, const char *corr_id)
+{
+	return s_cluster_read_attrs(ieee, ep_id, cluster_id, attr_ids, attr_count,
+				    corr_id, false);
 }
 
 esp_err_t zb_cluster_ping(uint64_t ieee, const char *corr_id)
 {
-	return s_cluster_read_attr(ieee, 0, ZB_PING_CLUSTER_ID, ZB_PING_ATTR_ID,
-				   corr_id, true);
+	uint16_t ping_attr = ZB_PING_ATTR_ID;
+	return s_cluster_read_attrs(ieee, 0, ZB_PING_CLUSTER_ID, &ping_attr, 1,
+				    corr_id, true);
 }
 
 /* -------------------------------------------------------------------------- */

@@ -255,12 +255,14 @@ static void handle_toggle(const char *ieee_str, uint8_t ep_id, const char *corr_
 }
 
 static void handle_level(const char *ieee_str, uint8_t level,
-                           uint16_t transition, uint8_t ep_id, const char *corr_id)
+                           uint16_t transition, uint8_t ep_id, bool with_on_off,
+                           const char *corr_id)
 {
-	ESP_LOGD(TAG, "handle_level %s -> %d trans=%u ep=%u",
-		 ieee_str, level, transition, ep_id);
+	ESP_LOGD(TAG, "handle_level %s -> %d trans=%u ep=%u on_off=%d",
+		 ieee_str, level, transition, ep_id, with_on_off);
 	uint64_t ieee = parse_ieee(ieee_str);
-	esp_err_t err = zb_cluster_send_level(ieee, level, transition, corr_id, ep_id);
+	esp_err_t err = zb_cluster_send_level(ieee, level, transition, corr_id,
+					      ep_id, with_on_off);
 	ack_cmd("level_ack", ieee_str, err, corr_id);
 }
 
@@ -338,6 +340,35 @@ static void handle_read_attr(const char *ieee_str, uint8_t ep_id,
 	ack_cmd("read_attr_ack", ieee_str, err, corr_id);
 }
 
+static void handle_read_attrs(const char *ieee_str, uint8_t ep_id,
+                              const char *cluster_str, cJSON *attrs_arr,
+                              const char *corr_id)
+{
+	ESP_LOGD(TAG, "handle_read_attrs %s ep=%u cluster=%s n=%d",
+		 ieee_str, ep_id, cluster_str, cJSON_GetArraySize(attrs_arr));
+
+	uint16_t attr_ids[ZB_READ_ATTRS_MAX];
+	uint8_t count = 0;
+	cJSON *item = NULL;
+	cJSON_ArrayForEach(item, attrs_arr) {
+		if (!cJSON_IsString(item) || count >= ZB_READ_ATTRS_MAX) {
+			break;
+		}
+		attr_ids[count++] = (uint16_t)strtoul(item->valuestring, NULL, 0);
+	}
+
+	uint64_t ieee = parse_ieee(ieee_str);
+	uint16_t cluster_id = (uint16_t)strtoul(cluster_str, NULL, 0);
+	esp_err_t err;
+	if (count == 0) {
+		err = ESP_ERR_INVALID_ARG;
+	} else {
+		err = zb_cluster_read_attrs(ieee, ep_id, cluster_id, attr_ids,
+					    count, corr_id);
+	}
+	ack_cmd("read_attr_ack", ieee_str, err, corr_id);
+}
+
 static void handle_permit(uint8_t duration)
 {
 	esp_err_t err = zb_stack_permit_join(duration);
@@ -408,9 +439,10 @@ static void dispatch_command(cJSON *root)
 	} else if (strcmp(cmd_str, "level") == 0) {
 		cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
 		cJSON *lvl = cJSON_GetObjectItem(root, "level");
+		cJSON *woo = cJSON_GetObjectItem(root, "with_on_off");
 		if (cJSON_IsString(ieee) && cJSON_IsNumber(lvl)) {
 			handle_level(ieee->valuestring, (uint8_t)lvl->valuedouble,
-				     transition, ep_id, corr_id);
+				     transition, ep_id, cJSON_IsTrue(woo), corr_id);
 		} else {
 			ack_missing_field("level_ack",
 					  cJSON_IsString(ieee) ? ieee->valuestring : NULL,
@@ -451,6 +483,19 @@ static void dispatch_command(cJSON *root)
 					  cJSON_IsString(ieee) ? ieee->valuestring : NULL,
 					  corr_id,
 					  cJSON_IsString(cluster) ? "attribute" : "cluster");
+		}
+	} else if (strcmp(cmd_str, "read_attrs") == 0) {
+		cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
+		cJSON *cluster = cJSON_GetObjectItem(root, "cluster");
+		cJSON *attrs = cJSON_GetObjectItem(root, "attributes");
+		if (cJSON_IsString(ieee) && cJSON_IsString(cluster) &&
+		    cJSON_IsArray(attrs)) {
+			handle_read_attrs(ieee->valuestring, ep_id,
+					  cluster->valuestring, attrs, corr_id);
+		} else {
+			ack_missing_field("read_attr_ack",
+					  cJSON_IsString(ieee) ? ieee->valuestring : NULL,
+					  corr_id, "attributes");
 		}
 	} else if (strcmp(cmd_str, "ping") == 0) {
 		cJSON *ieee = cJSON_GetObjectItem(root, "ieee");

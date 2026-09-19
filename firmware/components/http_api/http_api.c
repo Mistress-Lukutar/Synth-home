@@ -295,7 +295,7 @@ static esp_err_t devices_post_handler(httpd_req_t *req)
 		uint16_t transition = (uint16_t)(trans_sec * 10.0 + 0.5);
 		cJSON_Delete(root);
 
-		esp_err_t err = zb_cluster_send_level(ieee, level, transition, corr_id, 0);
+		esp_err_t err = zb_cluster_send_level(ieee, level, transition, corr_id, 0, false);
 		if (err != ESP_OK) {
 			ESP_LOGE(TAG, "zb_cluster_send_level failed: %s", esp_err_to_name(err));
 			return send_error(req, 500, "Failed to send command");
@@ -366,7 +366,7 @@ static esp_err_t devices_post_handler(httpd_req_t *req)
 
 			if (err == ESP_OK && cJSON_IsNumber(level_item)) {
 				uint8_t level = (uint8_t)cJSON_GetNumberValue(level_item);
-				err = zb_cluster_send_level(ieee, level, transition, corr_id, 0);
+				err = zb_cluster_send_level(ieee, level, transition, corr_id, 0, false);
 			}
 
 			cJSON_Delete(root);

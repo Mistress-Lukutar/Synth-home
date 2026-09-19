@@ -116,6 +116,7 @@ void app_main(void)
 
 	ESP_ERROR_CHECK(zb_stack_init());
 	ESP_ERROR_CHECK(zb_device_mgr_init());
+	ESP_ERROR_CHECK(zb_clusters_init());
 	ESP_ERROR_CHECK(zb_cmd_tracker_init());
 	zb_stack_register_callbacks(zb_device_mgr_on_device_join,
 				    zb_device_mgr_on_device_leave,
