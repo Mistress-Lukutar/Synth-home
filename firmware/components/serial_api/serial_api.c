@@ -13,6 +13,7 @@
 #include "zb_stack.h"
 #include "com_pipeline.h"
 #include "color_utils.h"
+#include "hub_stats.h"
 
 static const char *TAG = "serial_api";
 static SemaphoreHandle_t s_stdout_mutex = NULL;
@@ -150,6 +151,7 @@ static void handle_list(void)
 		}
 	}
 	cJSON_AddItemToObject(root, "devices", arr);
+	hub_stats_add_json(root);
 	send_json_line(root);
 	cJSON_Delete(root);
 }
@@ -493,6 +495,7 @@ static void serial_task(void *arg)
 			cJSON *root = cJSON_Parse(line);
 			if (!root) {
 				ESP_LOGW(TAG, "Failed to parse JSON line: '%s'", line);
+				hub_stats_inc(HUB_STATS_INVALID_JSON);
 				cJSON *err = cJSON_CreateObject();
 				cJSON_AddStringToObject(err, "evt", "error");
 				cJSON_AddStringToObject(err, "message", "invalid_json");
@@ -513,6 +516,7 @@ static void serial_task(void *arg)
 			}
 
 			const char *cmd_str = cmd->valuestring;
+			hub_stats_inc(HUB_STATS_CMDS_RECEIVED);
 
 			const char *corr_id = NULL;
 			cJSON *corr_item = cJSON_GetObjectItem(root, "correlation_id");

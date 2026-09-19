@@ -8,6 +8,7 @@
 #include "nvs_storage.h"
 #include "hub_config.h"
 #include "com_pipeline.h"
+#include "hub_stats.h"
 #include "zb_stack.h"
 #include "zb_device_mgr.h"
 #include "zb_clusters.h"
@@ -115,6 +116,7 @@ void app_main(void)
 	ESP_ERROR_CHECK(nvs_storage_init());
 	ESP_ERROR_CHECK(esp_event_loop_create_default());
 	ESP_ERROR_CHECK(hub_config_init());
+	ESP_ERROR_CHECK(hub_stats_init());
 	ESP_ERROR_CHECK(com_pipeline_init());
 
 

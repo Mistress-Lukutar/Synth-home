@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS "zb_clusters.c"
     INCLUDE_DIRS "include"
-    REQUIRES "zb_device_mgr" "zb_stack" "com_pipeline" "zb_cmd_tracker"
+    REQUIRES "zb_device_mgr" "hub_stats" "zb_stack" "com_pipeline" "zb_cmd_tracker"
 )
 
 # esp-zigbee-lib 2.x compat headers (CONFIG_ZB_SDK_1xx) emit #warning

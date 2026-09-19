@@ -8,6 +8,7 @@
 #include "esp_zigbee_core.h"
 #include "zcl/esp_zigbee_zcl_command.h"
 #include "zdo/esp_zigbee_zdo_command.h"
+#include "hub_stats.h"
 
 static const char *TAG = "zb_clusters";
 
@@ -18,6 +19,10 @@ static const char *TAG = "zb_clusters";
 static void emit_command_failed(const char *corr_id, const char *error,
                                 const char *message)
 {
+	if (error && strcmp(error, "ZCL_SEND_FAILED") == 0) {
+		hub_stats_inc(HUB_STATS_ZCL_SEND_FAILED);
+	}
+
 	com_event_t evt = {
 		.type = COM_EVT_COMMAND_FAILED,
 	};

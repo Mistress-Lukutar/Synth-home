@@ -10,6 +10,7 @@
 
 #include "esp_log.h"
 #include "cJSON.h"
+#include "hub_stats.h"
 
 #define COM_PIPELINE_QUEUE_SIZE  32
 #define COM_PIPELINE_TASK_STACK  4096
@@ -244,6 +245,7 @@ esp_err_t com_pipeline_emit(const com_event_t *event)
 
 	if (xQueueSend(s_com_queue, event, pdMS_TO_TICKS(COM_PIPELINE_EMIT_TIMEOUT_MS)) != pdTRUE) {
 		ESP_LOGW(TAG, "Queue full, event dropped");
+		hub_stats_inc(HUB_STATS_QUEUE_FULL_DROPS);
 		return ESP_FAIL;
 	}
 

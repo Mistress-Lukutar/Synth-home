@@ -8,6 +8,7 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "com_pipeline.h"
+#include "hub_stats.h"
 
 /* Forward declaration - implemented by the zb_clusters component. */
 esp_err_t zb_cluster_read_attr(uint64_t ieee, uint8_t ep_id, uint16_t cluster_id,
@@ -124,6 +125,7 @@ static void probe_timer_cb(void *arg)
 
 	esp_err_t err = zb_cluster_read_attr(ieee, endpoint, cluster_id, attr_id,
 					     "probe");
+	hub_stats_inc(HUB_STATS_PROBE_READS);
 	if (err != ESP_OK) {
 		ESP_LOGW(TAG, "Probe read attr failed: %s", esp_err_to_name(err));
 	}
