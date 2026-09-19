@@ -1,6 +1,9 @@
 """Business-logic service wrapper around HubClient."""
 
 import asyncio
+import time
+import uuid
+from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
 
 import structlog
@@ -17,6 +20,29 @@ PING_INTERVAL_SECONDS = 30
 PING_TIMEOUT_SECONDS = 3.0
 PENDING_COMMAND_TTL_SECONDS = 60
 
+# Per-device command queue: retries and pacing.
+COMMAND_RETRY_MAX = 3
+COMMAND_RETRY_BACKOFF_S = (0.5, 2.0)
+# Wait for a terminal firmware outcome before retrying. Level/color ramp for
+# up to ~15 s in the tracker, instant commands time out at 5 s.
+COMMAND_RESOLVE_TIMEOUT_S = {"level": 20.0, "color": 20.0, "color_ct": 20.0}
+COMMAND_RESOLVE_TIMEOUT_DEFAULT_S = 10.0
+# Minimum gap between read_attr sends (the poll storm mitigation).
+READ_SEND_MIN_GAP_S = 0.03
+
+
+@dataclass
+class QueuedCommand:
+    """One device command waiting in a per-device FIFO."""
+
+    ieee: str
+    action: str
+    correlation_id: str
+    params: Optional[Dict[str, Any]] = None
+    endpoint: Optional[int] = None
+    attempt: int = 1
+    future: Optional[asyncio.Future] = field(default=None, repr=False)
+
 
 class HubService:
     """Async business-logic wrapper for hub communication.
@@ -25,6 +51,11 @@ class HubService:
     API. All persisted state updates are delegated to
     :class:`DeviceStateManager`, which is the single authority for
     ``Device.state`` and ``Device.online``.
+
+    Device commands go through a per-device FIFO worker: sends to one device
+    keep their issue order (``on`` -> ``level`` -> ``color`` scene fan-outs),
+    and failed attempts are retried with backoff using the same correlation
+    id, so the id returned to the caller stays valid across retries.
 
     Not a singleton — instantiated per application lifespan or test fixture.
     """
@@ -48,6 +79,19 @@ class HubService:
         # persisted last.
         self._state_events: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
         self._state_worker: Optional[asyncio.Task] = None
+        # Per-device command FIFOs and their consumer tasks.
+        self._device_queues: Dict[str, asyncio.Queue[QueuedCommand]] = {}
+        # Outbound read pacing state.
+        self._read_pace_lock = asyncio.Lock()
+        self._last_read_ts = float("-inf")
+        # Traffic counters for the periodic summary log.
+        self._stats = {
+            "commands_sent": 0,
+            "reads_sent": 0,
+            "events_received": 0,
+            "state_changes": 0,
+            "hub_errors": 0,
+        }
 
         self._state_manager = state_manager or DeviceStateManager()
         self._state_manager.set_callbacks(
@@ -79,6 +123,8 @@ class HubService:
         if self.is_connected():
             logger.info("disconnecting_from_hub")
         self._stop_ping_loop()
+        # Drop queued commands: a fresh connect re-syncs everything anyway.
+        self._device_queues.clear()
         await self._cancel_background_tasks()
         # Drop state changes that were queued but never applied; a fresh
         # connect re-syncs everything from the hub anyway.
@@ -88,36 +134,201 @@ class HubService:
         await self._state_manager.mark_all_devices_offline()
         await self._event_bus.publish("hub_disconnected", {})
 
+    # ------------------------------------------------------------------
+    # Command path: per-device FIFO with retries
+    # ------------------------------------------------------------------
+
     async def send_command(
         self, ieee: str, action: str, params: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
+        """Queue a device command. Returns 202-style tracking info at once.
+
+        The correlation_id is generated here and reused for every retry, so
+        callers (HTTP clients, frontend pending maps) track one id per
+        logical command.
+        """
         if not self.is_connected():
             raise HubConnectionError()
-        result = await self._client.send_command(ieee, action, params)
-        correlation_id = result.get("correlation_id")
+        correlation_id = f"corr-{uuid.uuid4().hex[:12]}"
         endpoint = (params or {}).get("endpoint")
-        self._state_manager.register_command(correlation_id, ieee, endpoint, action)
+        queue = self._device_queues.get(ieee)
+        if queue is None:
+            queue = asyncio.Queue()
+            self._device_queues[ieee] = queue
+            self._spawn_background(self._device_worker(ieee))
+        queue.put_nowait(
+            QueuedCommand(
+                ieee=ieee,
+                action=action,
+                correlation_id=correlation_id,
+                params=dict(params) if params else None,
+                endpoint=endpoint,
+            )
+        )
+        self._stats["commands_sent"] += 1
         logger.info(
-            "command_sent",
+            "command_queued",
             ieee=ieee,
             action=action,
             endpoint=endpoint,
             correlation_id=correlation_id,
+            queued=self._device_queues[ieee].qsize(),
         )
-        return result
+        return {"correlation_id": correlation_id, "status": "pending"}
+
+    async def _device_worker(self, ieee: str) -> None:
+        """Consume one device's command FIFO in order, with retries."""
+        queue = self._device_queues.get(ieee)
+        if queue is None:
+            return
+        while True:
+            cmd = await queue.get()
+            try:
+                await self._process_command(cmd)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "device_command_crashed", ieee=ieee, action=cmd.action
+                )
+            finally:
+                queue.task_done()
+
+    async def _process_command(self, cmd: QueuedCommand) -> None:
+        """Send one command, retrying terminal failures with backoff."""
+        timeout = COMMAND_RESOLVE_TIMEOUT_S.get(
+            cmd.action, COMMAND_RESOLVE_TIMEOUT_DEFAULT_S
+        )
+        for attempt in range(1, COMMAND_RETRY_MAX + 1):
+            if not self.is_connected():
+                logger.warning(
+                    "command_aborted_disconnected",
+                    ieee=cmd.ieee,
+                    action=cmd.action,
+                    correlation_id=cmd.correlation_id,
+                )
+                return
+
+            params = dict(cmd.params) if cmd.params else {}
+            # A lamp transitioning from off ignores plain MoveToLevel; when
+            # the cache says the device is off (or unknown), send
+            # MoveToLevelWithOnOff so the level applies atomically.
+            if cmd.action == "level" and cmd.endpoint is not None:
+                if not self._cached_on(cmd.ieee, cmd.endpoint):
+                    params.setdefault("with_on_off", True)
+
+            self._state_manager.register_command(
+                cmd.correlation_id, cmd.ieee, cmd.endpoint, cmd.action
+            )
+            try:
+                await self._client.send_command(
+                    cmd.ieee,
+                    cmd.action,
+                    params,
+                    correlation_id=cmd.correlation_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "command_send_failed",
+                    ieee=cmd.ieee,
+                    action=cmd.action,
+                    attempt=attempt,
+                    error=str(exc),
+                )
+                self._state_manager.fail_pending(cmd.correlation_id, "send_failed")
+
+            outcome = await self._state_manager.wait_resolution(
+                cmd.correlation_id, timeout
+            )
+            result = (outcome or {}).get("outcome")
+            if result in ("resolved_by_state_change", "delivered", "completed"):
+                logger.info(
+                    "command_resolved",
+                    ieee=cmd.ieee,
+                    action=cmd.action,
+                    attempt=attempt,
+                    outcome=result,
+                    correlation_id=cmd.correlation_id,
+                )
+                return
+
+            if result == "expired":
+                # TTL sweep already gave up on this id; stop retrying.
+                return
+
+            logger.info(
+                "command_attempt_failed",
+                ieee=cmd.ieee,
+                action=cmd.action,
+                attempt=attempt,
+                outcome=result or "no_response",
+                correlation_id=cmd.correlation_id,
+            )
+            if attempt < COMMAND_RETRY_MAX:
+                backoff = COMMAND_RETRY_BACKOFF_S[min(attempt - 1, len(COMMAND_RETRY_BACKOFF_S) - 1)]
+                await asyncio.sleep(backoff)
+
+        logger.warning(
+            "command_failed_final",
+            ieee=cmd.ieee,
+            action=cmd.action,
+            correlation_id=cmd.correlation_id,
+        )
+
+    def _cached_on(self, ieee: str, endpoint: int) -> bool:
+        """True when the cached state says the endpoint is on."""
+        for dev in self._devices:
+            if dev.get("ieee") == ieee:
+                state = dev.get("state") or {}
+                return bool((state.get(str(endpoint)) or {}).get("on"))
+        return False
+
+    # ------------------------------------------------------------------
+    # Read path: paced multi- and single-attribute reads
+    # ------------------------------------------------------------------
+
+    async def _pace_read_send(self) -> None:
+        """Serialize outbound reads with a minimum gap between sends."""
+        async with self._read_pace_lock:
+            now = time.monotonic()
+            wait = READ_SEND_MIN_GAP_S - (now - self._last_read_ts)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last_read_ts = time.monotonic()
 
     async def read_attr(
         self, ieee: str, endpoint: Optional[int], cluster: str, attribute: str
     ) -> Dict[str, Any]:
         if not self.is_connected():
             raise HubConnectionError()
+        await self._pace_read_send()
         result = await self._client.read_attr(ieee, endpoint, cluster, attribute)
-        logger.info(
+        self._stats["reads_sent"] += 1
+        logger.debug(
             "read_attr_sent",
             ieee=ieee,
             endpoint=endpoint,
             cluster=cluster,
             attribute=attribute,
+            correlation_id=result.get("correlation_id"),
+        )
+        return result
+
+    async def read_attrs(
+        self, ieee: str, endpoint: Optional[int], cluster: str, attributes: List[str]
+    ) -> Dict[str, Any]:
+        """Read several attributes of one cluster in a single ZCL frame."""
+        if not self.is_connected():
+            raise HubConnectionError()
+        await self._pace_read_send()
+        result = await self._client.read_attrs(ieee, endpoint, cluster, attributes)
+        self._stats["reads_sent"] += 1
+        logger.debug(
+            "read_attrs_sent",
+            ieee=ieee,
+            endpoint=endpoint,
+            cluster=cluster,
+            attributes=attributes,
             correlation_id=result.get("correlation_id"),
         )
         return result
@@ -132,6 +343,7 @@ class HubService:
     ) -> Dict[str, Any]:
         if not self.is_connected():
             raise HubConnectionError()
+        await self._pace_read_send()
         result = await self._client.read_attr_and_wait(ieee, endpoint, cluster, attribute, timeout)
         logger.info(
             "read_attr_wait_done",
@@ -168,9 +380,15 @@ class HubService:
     def get_cached_devices(self) -> List[Dict[str, Any]]:
         return list(self._devices)
 
+    # ------------------------------------------------------------------
+    # Inbound hub messages
+    # ------------------------------------------------------------------
+
     def _on_hub_message(self, data: Dict[str, Any]) -> None:
         """Handle incoming messages from the hub (called from reader task via callback)."""
         evt = data.get("evt") or data.get("event")
+        self._stats["events_received"] += 1
+
         if evt == "device_list":
             raw_devices = data.get("devices", [])
             mapped: List[Dict[str, Any]] = []
@@ -186,14 +404,12 @@ class HubService:
                         "last_seen_ms": d.get("last_seen_ms"),
                     }
                 )
-                logger.info(
+                logger.debug(
                     "device_parsed_from_hub",
                     ieee=d.get("ieee_addr"),
                     name=d.get("name"),
                     endpoint_count=len(ep_list),
-                    endpoints=ep_list,
                     online=d.get("online", True),
-                    raw_device_keys=list(d.keys()),
                 )
             self._devices = mapped
             self._spawn_background(self._sync_devices(mapped))
@@ -207,7 +423,14 @@ class HubService:
         if evt and evt.endswith("_ack"):
             self._spawn_background(self._handle_ack(data, evt))
 
+        if evt == "command_failed":
+            self._spawn_background(self._handle_command_failed(data))
+
+        if evt == "error":
+            self._spawn_background(self._handle_hub_error(data))
+
         if evt == "state_change":
+            self._stats["state_changes"] += 1
             # Must be applied in arrival order (see _state_events above);
             # fire-and-forget tasks here would reorder ramp reports.
             self._ensure_state_worker()
@@ -227,6 +450,35 @@ class HubService:
             )
 
         self._spawn_background(self._event_bus.publish("hub_message", {"data": data}))
+
+    async def _handle_hub_error(self, data: Dict[str, Any]) -> None:
+        """React to firmware ``error`` events instead of ignoring them.
+
+        ``invalid_json`` / ``busy`` mean a command line was lost before it
+        executed; resolve the matching (or oldest) pending command so its
+        device worker retries it, instead of hanging until the TTL sweep.
+        """
+        message = data.get("message", "unknown")
+        self._stats["hub_errors"] += 1
+        correlation_id = data.get("correlation_id")
+        logger.warning(
+            "hub_error_event", message=message, correlation_id=correlation_id
+        )
+        if message not in ("invalid_json", "busy"):
+            return
+        if correlation_id:
+            self._state_manager.fail_pending(correlation_id, message)
+        else:
+            oldest = self._state_manager.fail_oldest_pending(message)
+            if oldest:
+                logger.info("oldest_pending_failed", correlation_id=oldest, reason=message)
+
+    async def _handle_command_failed(self, data: Dict[str, Any]) -> None:
+        """Resolve a pending command the firmware rejected outright."""
+        correlation_id = data.get("correlation_id")
+        if not correlation_id:
+            return
+        self._state_manager.fail_pending(correlation_id, "command_failed")
 
     async def _sync_devices(self, devices: List[Dict[str, Any]]) -> None:
         """Persist or update device topology in the database.
@@ -385,6 +637,10 @@ class HubService:
         await asyncio.gather(*self._bg_tasks, return_exceptions=True)
         self._bg_tasks.clear()
 
+    # ------------------------------------------------------------------
+    # Liveness ping loop
+    # ------------------------------------------------------------------
+
     def _start_ping_loop(self) -> None:
         """Start the periodic liveness ping loop."""
         self._stop_ping.clear()
@@ -417,6 +673,7 @@ class HubService:
                     logger.info("ping_cycle_skipped_not_connected")
                     continue
                 try:
+                    self._log_traffic_summary()
                     # Drop pending commands whose firmware event was lost.
                     expired = self._state_manager.sweep_expired(PENDING_COMMAND_TTL_SECONDS)
                     if expired:
@@ -428,6 +685,13 @@ class HubService:
             logger.debug("ping_loop_cancelled")
         except Exception:
             logger.exception("ping_loop_failed")
+
+    def _log_traffic_summary(self) -> None:
+        """One summary line per ping cycle so loss is countable (Phase 0)."""
+        stats = dict(self._stats)
+        logger.info("hub_traffic_summary", period_s=PING_INTERVAL_SECONDS, **stats)
+        for key in self._stats:
+            self._stats[key] = 0
 
     async def ping_device(self, ieee: str) -> Dict[str, Any]:
         """Send a single liveness ping to a device and track the result."""
@@ -494,8 +758,6 @@ class HubService:
 
     def _new_correlation_id(self) -> str:
         """Generate a short correlation id for hub commands."""
-        import uuid
-
         return f"ping-{uuid.uuid4().hex[:12]}"
 
     def _update_cached_online(self, ieee: str, online: bool) -> None:

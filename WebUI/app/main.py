@@ -121,12 +121,13 @@ def create_app() -> FastAPI:
         async with async_session() as db:
             await panel_trigger_service.load_all(db)
 
-        # Bridge domain events to SSE
+        # Bridge domain events to SSE. hub_serial is deliberately NOT
+        # bridged: mirroring every serial line to every browser amplified
+        # bursts into the event loop and the SSE channel.
         for evt in (
             "hub_connected",
             "hub_disconnected",
             "hub_message",
-            "hub_serial",
             "panel_output",
         ):
             event_bus.subscribe(evt, lambda p, e=evt: _sse_bridge(e, p))

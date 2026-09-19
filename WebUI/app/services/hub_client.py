@@ -115,9 +115,9 @@ class HubClient:
                 continue
             if chunk:
                 decoded = chunk.decode("utf-8", errors="replace")
-                logger.info("serial_chunk_received", byte_count=len(chunk), raw_preview=decoded[:400])
+                logger.debug("serial_chunk_received", byte_count=len(chunk), raw_preview=decoded[:400])
                 messages = self._protocol.feed(chunk)
-                logger.info("serial_parsed_result", message_count=len(messages), remaining_buffer_len=len(self._protocol._buffer))
+                logger.debug("serial_parsed_result", message_count=len(messages), remaining_buffer_len=len(self._protocol._buffer))
                 if self._event_bus:
                     for msg in messages:
                         await self._event_bus.publish("hub_serial", {"direction": "rx", "payload": msg})
@@ -177,7 +177,7 @@ class HubClient:
         if ser is None or not ser.is_open:
             raise RuntimeError("Serial port is not open")
         line = json.dumps(payload) + "\n"
-        logger.info("serial_raw_write", payload=payload)
+        logger.debug("serial_raw_write", payload=payload)
         if self._event_bus:
             await self._event_bus.publish("hub_serial", {"direction": "tx", "payload": payload})
         try:
@@ -200,12 +200,20 @@ class HubClient:
         )
 
     async def send_command(
-        self, ieee: str, action: str, params: Optional[Dict[str, Any]] = None
+        self,
+        ieee: str,
+        action: str,
+        params: Optional[Dict[str, Any]] = None,
+        correlation_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Send a device command to the hub. Returns correlation_id for async tracking."""
+        """Send a device command to the hub. Returns correlation_id for async tracking.
+
+        The caller may supply its own correlation_id (used by HubService to
+        keep one id across send retries).
+        """
         import uuid
 
-        correlation_id = f"corr-{uuid.uuid4().hex[:12]}"
+        correlation_id = correlation_id or f"corr-{uuid.uuid4().hex[:12]}"
         payload: Dict[str, Any] = {"cmd": action, "ieee": ieee, "correlation_id": correlation_id}
         if params:
             payload.update(params)
@@ -224,6 +232,29 @@ class HubClient:
             "ieee": ieee,
             "cluster": cluster,
             "attribute": attribute,
+            "correlation_id": correlation_id,
+        }
+        if endpoint:
+            payload["endpoint"] = endpoint
+        await self.send_raw(payload)
+        return {"correlation_id": correlation_id, "status": "pending"}
+
+    async def read_attrs(
+        self,
+        ieee: str,
+        endpoint: Optional[int],
+        cluster: str,
+        attributes: list[str],
+    ) -> Dict[str, Any]:
+        """Send a multi-attribute read_attrs command to the hub (one ZCL frame)."""
+        import uuid
+
+        correlation_id = f"corr-{uuid.uuid4().hex[:12]}"
+        payload: Dict[str, Any] = {
+            "cmd": "read_attrs",
+            "ieee": ieee,
+            "cluster": cluster,
+            "attributes": attributes,
             "correlation_id": correlation_id,
         }
         if endpoint:

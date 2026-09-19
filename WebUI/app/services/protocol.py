@@ -26,7 +26,7 @@ class ProtocolHandler:
         """Feed raw bytes into the parser and return complete messages."""
         messages: list[Dict[str, Any]] = []
         self._buffer += chunk.decode("utf-8", errors="ignore")
-        logger.info("protocol_buffer_state", buffer_len=len(self._buffer), has_newline="\n" in self._buffer)
+        logger.debug("protocol_buffer_state", buffer_len=len(self._buffer), has_newline="\n" in self._buffer)
         while "\n" in self._buffer:
             line, self._buffer = self._buffer.split("\n", 1)
             line = line.strip()
@@ -56,14 +56,14 @@ class ProtocolHandler:
 
         # Verbose raw logging for debugging firmware compatibility
         if evt == "device_list":
-            logger.info(
+            logger.debug(
                 "hub_raw_device_list",
                 device_count=len(devices) if isinstance(devices, list) else None,
                 first_device_summary=str(devices[0])[:300] if isinstance(devices, list) and devices else None,
                 raw_keys=list(data.keys()),
             )
         elif evt in ("command_status", "state_change", "device_joined", "device_left"):
-            logger.info(
+            logger.debug(
                 "hub_raw_event",
                 hub_event=evt,
                 ieee=ieee,

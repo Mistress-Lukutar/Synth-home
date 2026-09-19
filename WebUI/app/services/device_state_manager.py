@@ -92,6 +92,7 @@ class DeviceStateManager:
         self._on_state_changed = on_state_changed
         self._on_online_changed = on_online_changed
         self._pending_commands: dict[str, dict[str, Any]] = {}
+        self._resolution_futures: dict[str, asyncio.Future] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
     def set_callbacks(
@@ -173,16 +174,30 @@ class DeviceStateManager:
         ieee: str,
         endpoint: Optional[int],
         action: str,
-    ) -> None:
-        """Track a command that was just sent to the firmware."""
+    ) -> Optional[asyncio.Future]:
+        """Track a command that was just sent to the firmware.
+
+        Returns a Future that resolves with ``{"outcome": ...}`` when the
+        command reaches a terminal state (``resolved_by_state_change``,
+        ``delivered``, ``completed``, ``failed``, ``timeout``,
+        ``ack_failed``, ``expired`` or a firmware ``error`` reason), or
+        ``None`` when called outside a running event loop.
+        """
         if not correlation_id or not ieee:
-            return
+            return None
         self._pending_commands[correlation_id] = {
             "ieee": ieee,
             "endpoint": endpoint,
             "action": action,
             "registered_at": datetime.now(timezone.utc),
         }
+        future: Optional[asyncio.Future] = None
+        try:
+            future = asyncio.get_running_loop().create_future()
+        except RuntimeError:
+            future = None
+        if future is not None:
+            self._resolution_futures[correlation_id] = future
         logger.info(
             "command_registered",
             correlation_id=correlation_id,
@@ -190,6 +205,54 @@ class DeviceStateManager:
             endpoint=endpoint,
             action=action,
         )
+        return future
+
+    async def wait_resolution(
+        self, correlation_id: str, timeout: float
+    ) -> Optional[dict[str, Any]]:
+        """Wait for a command's terminal outcome (see register_command).
+
+        Returns ``None`` on timeout; the pending entry stays registered so a
+        late resolution is still applied to the pending bookkeeping.
+        """
+        future = self._resolution_futures.get(correlation_id)
+        if future is None:
+            return None
+        try:
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+
+    def fail_pending(self, correlation_id: str, reason: str) -> bool:
+        """Drop a pending command and resolve its future with ``reason``.
+
+        Used when the firmware reports the command line itself as lost
+        (``invalid_json``, ``busy``): the sender retries with the same id.
+        """
+        pending = self._pending_commands.pop(correlation_id, None)
+        if pending is None:
+            return False
+        self._resolve_future(correlation_id, reason)
+        logger.info(
+            "pending_command_failed",
+            correlation_id=correlation_id,
+            ieee=pending.get("ieee"),
+            action=pending.get("action"),
+            reason=reason,
+        )
+        return True
+
+    def fail_oldest_pending(self, reason: str) -> Optional[str]:
+        """Fail the oldest pending command (insertion order) with ``reason``."""
+        for correlation_id in self._pending_commands:
+            self.fail_pending(correlation_id, reason)
+            return correlation_id
+        return None
+
+    def _resolve_future(self, correlation_id: str, outcome: str) -> None:
+        future = self._resolution_futures.pop(correlation_id, None)
+        if future is not None and not future.done():
+            future.set_result({"outcome": outcome})
 
     async def on_ack(
         self,
@@ -210,6 +273,7 @@ class DeviceStateManager:
 
         if not ok:
             self._pending_commands.pop(correlation_id, None)
+            self._resolve_future(correlation_id, "ack_failed")
             logger.warning(
                 "command_ack_failed",
                 correlation_id=correlation_id,
@@ -247,6 +311,7 @@ class DeviceStateManager:
             pending = self._pending_commands.get(correlation_id)
             if pending and status in ("completed", "delivered", "timeout", "failed"):
                 self._pending_commands.pop(correlation_id, None)
+                self._resolve_future(correlation_id, status)
                 logger.info(
                     "command_resolved",
                     correlation_id=correlation_id,
@@ -287,6 +352,7 @@ class DeviceStateManager:
         ]
         for correlation_id in expired:
             pending = self._pending_commands.pop(correlation_id)
+            self._resolve_future(correlation_id, "expired")
             logger.info(
                 "pending_command_expired",
                 correlation_id=correlation_id,
@@ -600,6 +666,7 @@ class DeviceStateManager:
 
             if resolved:
                 to_remove.append(correlation_id)
+                self._resolve_future(correlation_id, "resolved_by_state_change")
                 logger.info(
                     "pending_command_resolved_by_state_change",
                     correlation_id=correlation_id,

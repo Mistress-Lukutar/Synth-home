@@ -24,7 +24,7 @@ async def list_devices(
     import structlog
     logger = structlog.get_logger(__name__)
     for d in devices:
-        logger.info(
+        logger.debug(
             "api_devices_response_item",
             ieee=d["ieee"],
             endpoint_count=len(d.get("endpoints") or []),
@@ -97,10 +97,19 @@ async def read_attr_batch(
     items: List[ReadAttrBatchItem],
     service: Annotated[HubService, Depends(require_connection)],
 ) -> List[CommandResponse]:
-    """Batch read attributes from multiple devices/endpoints in one request."""
+    """Batch read attributes from multiple devices/endpoints in one request.
+
+    Sends are paced by HubService; items with an ``attributes`` list become
+    one multi-attribute read per cluster instead of one read per attribute.
+    """
     results: List[CommandResponse] = []
     for item in items:
-        result = await service.read_attr(item.ieee, item.endpoint, item.cluster, item.attribute)
+        if item.attributes:
+            result = await service.read_attrs(
+                item.ieee, item.endpoint, item.cluster, item.attributes
+            )
+        else:
+            result = await service.read_attr(item.ieee, item.endpoint, item.cluster, item.attribute)
         results.append(CommandResponse(correlation_id=result["correlation_id"], status=result["status"]))
     return results
 

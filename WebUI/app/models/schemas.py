@@ -61,6 +61,9 @@ class ReadAttrBatchItem(BaseModel):
     endpoint: Optional[int] = None
     cluster: str
     attribute: str
+    # When set, one multi-attribute read_attrs command is sent instead of a
+    # per-attribute read_attr command (one ZCL frame per cluster).
+    attributes: Optional[List[str]] = None
 
 
 class CommandResponse(BaseModel):
