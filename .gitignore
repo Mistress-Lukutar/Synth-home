@@ -3,3 +3,5 @@
 /build/
 /firmware/build/
 /firmware/managed_components/
+
+/firmware/.vscode/
