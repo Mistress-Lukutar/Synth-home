@@ -71,16 +71,46 @@ const state = reactive<State>({
 const POLL_BASE_MS = 60000
 const POLL_JITTER_MS = 15000
 
+/* Pending-command timers. The firmware emits command_status *delivered* on the
+ * ZCL Default Response and *completed* from the tracker BEFORE the matching
+ * state_change reaches the host, so neither is terminal for the UI: dropping
+ * the pending entry on them flashes the stale reported state (gray before
+ * green). Pending entries are only resolved by a matching state_change, or by
+ * the timers below as a fallback. */
+const PENDING_GRACE_MS = 4000 // after delivered/completed; firmware tracker timeout is 5 s
+const PENDING_TTL_MS = 8000 // hard cap from registration, covers a lost ack
+const pendingTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function armPendingTimer(correlationId: string, delay: number) {
+  const existing = pendingTimers.get(correlationId)
+  if (existing) clearTimeout(existing)
+  pendingTimers.set(
+    correlationId,
+    setTimeout(() => {
+      pendingTimers.delete(correlationId)
+      state.pendingCommands.delete(correlationId)
+    }, delay),
+  )
+}
+
 function addPendingCommand(correlationId: string, cmd: PendingCommand) {
   state.pendingCommands.set(correlationId, cmd)
+  armPendingTimer(correlationId, PENDING_TTL_MS)
 }
 
 function removePendingCommand(correlationId: string) {
   state.pendingCommands.delete(correlationId)
+  const timer = pendingTimers.get(correlationId)
+  if (timer) {
+    clearTimeout(timer)
+    pendingTimers.delete(correlationId)
+  }
 }
 
 function clearPendingCommands() {
   state.pendingCommands.clear()
+  for (const timer of pendingTimers.values()) clearTimeout(timer)
+  pendingTimers.clear()
 }
 
 function logEvent(text: string) {
@@ -111,6 +141,9 @@ function handleSSEMessage(msg: any) {
     }
     if (evt === 'command_status') {
       handleCommandStatus(data)
+    }
+    if (evt === 'command_failed') {
+      handleCommandFailed(data)
     }
     if (evt === 'ping_result') {
       handlePingResult(data)
@@ -263,6 +296,18 @@ function handleStateChange(data: any) {
   }
 }
 
+function handleCommandFailed(data: any) {
+  // The firmware rejected the command outright (ZCL_SEND_FAILED, tracker full,
+  // ...). Terminal: drop the pending entry so the toggle does not stick yellow.
+  const correlationId = data.correlation_id
+  if (!correlationId) return
+  const pending = state.pendingCommands.get(correlationId)
+  if (pending) {
+    logEvent(`Command ${pending.action} failed: ${data.reason || data.error || 'unknown'}`)
+    removePendingCommand(correlationId)
+  }
+}
+
 function handleCommandStatus(data: any) {
   const correlationId = data.correlation_id
   const status = data.status
@@ -283,10 +328,16 @@ function handleCommandStatus(data: any) {
 
   if (status === 'timeout' || status === 'failed') {
     logEvent(`Command ${pending.action} ${status} for ${pending.ieee}`)
+    removePendingCommand(correlationId)
+    return
   }
 
-  if (status === 'timeout' || status === 'failed' || status === 'completed' || status === 'delivered') {
-    removePendingCommand(correlationId)
+  // delivered/completed are NOT terminal for the UI: the firmware emits them
+  // before the matching state_change, so removing pending here would flash the
+  // stale reported state. Stay pending; the state_change resolves us, with the
+  // grace timer below as a fallback if the report never arrives.
+  if (status === 'completed' || status === 'delivered') {
+    armPendingTimer(correlationId, PENDING_GRACE_MS)
   }
 }
 
