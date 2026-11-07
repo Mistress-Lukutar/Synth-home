@@ -400,6 +400,14 @@ static void handle_permit(uint8_t duration)
 	cJSON_Delete(root);
 }
 
+static void handle_remove(const char *ieee_str, const char *corr_id)
+{
+	ESP_LOGI(TAG, "handle_remove %s", ieee_str);
+	uint64_t ieee = parse_ieee(ieee_str);
+	esp_err_t err = zb_device_mgr_send_leave_and_remove(ieee);
+	ack_cmd("remove_ack", ieee_str, err, corr_id);
+}
+
 static void handle_ping(const char *ieee_str, const char *corr_id)
 {
 	ESP_LOGD(TAG, "handle_ping %s", ieee_str);
@@ -533,6 +541,10 @@ static void dispatch_command(cJSON *root)
 		} else {
 			send_error_corr("missing or invalid 'duration'", corr_id);
 		}
+	} else if (strcmp(cmd_str, "remove") == 0) {
+		cJSON *ieee = cJSON_GetObjectItem(root, "ieee");
+		if (cJSON_IsString(ieee)) handle_remove(ieee->valuestring, corr_id);
+		else ack_missing_field("remove_ack", NULL, corr_id, "ieee");
 	} else {
 		send_simple_error("unknown_cmd");
 	}

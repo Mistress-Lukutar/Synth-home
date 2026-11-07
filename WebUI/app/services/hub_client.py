@@ -310,6 +310,29 @@ class HubClient:
         await self.send_raw({"cmd": "permit", "duration": duration})
         return {"success": True, "status": "sent"}
 
+    async def remove_device(self, ieee: str, timeout: float = 5.0) -> Dict[str, Any]:
+        """Send a remove command and wait for the firmware ``remove_ack``.
+
+        The firmware sends a ZDO leave request to the device (best-effort,
+        ghosts never answer), drops it from its device table + NVS, and
+        emits ``device_left``. The ack only reports whether the firmware
+        accepted the removal, not whether the device itself responded.
+        """
+        import uuid
+
+        correlation_id = f"corr-{uuid.uuid4().hex[:12]}"
+        payload = {"cmd": "remove", "ieee": ieee, "correlation_id": correlation_id}
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        self._protocol.register_future(correlation_id, fut)
+        try:
+            await self.send_raw(payload)
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            return {"correlation_id": correlation_id, "status": "timeout"}
+        finally:
+            self._protocol._resolve_future(correlation_id, {})
+
     def is_connected(self) -> bool:
         return self._ser is not None and self._ser.is_open
 

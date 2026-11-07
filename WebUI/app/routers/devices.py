@@ -5,7 +5,7 @@ from typing import Annotated, List
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import require_connection, get_db
+from app.dependencies import require_connection, get_db, get_hub_service
 from app.models.schemas import CommandRequest, CommandResponse, DevicesResponse, ReadAttrBatchItem, ReadAttrRequest, RenameRequest, RenameResponse, StatusResponse
 from app.repositories.device import DeviceRepository
 from app.repositories.device_alias import DeviceAliasRepository
@@ -117,9 +117,30 @@ async def read_attr_batch(
 @router.delete("/api/devices/{ieee}", response_model=StatusResponse)
 async def delete_device(
     ieee: str,
+    service: Annotated[HubService, Depends(get_hub_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> StatusResponse:
-    """Remove a device and its alias from the database."""
+    """Remove a device from the firmware device table, then from the database.
+
+    The firmware remove is best-effort: it must not block the DB cleanup when
+    the hub is disconnected or the entry is already gone there — otherwise the
+    next device_list sync would resurrect the record.
+    """
+    import structlog
+
+    logger = structlog.get_logger(__name__)
+    try:
+        result = await service.remove_device(ieee)
+        if not result.get("ok", False):
+            logger.warning(
+                "firmware_remove_not_ok",
+                ieee=ieee,
+                error=result.get("error"),
+                status=result.get("status"),
+            )
+    except Exception:
+        logger.warning("firmware_remove_unreachable", ieee=ieee, exc_info=True)
+
     repo = DeviceRepository(db)
     deleted = await repo.delete(ieee)
     if deleted:

@@ -361,6 +361,24 @@ class HubService:
         logger.info("permit_join_sent", duration=duration)
         return result
 
+    async def remove_device(self, ieee: str) -> Dict[str, Any]:
+        """Ask the firmware to drop a device from its table.
+
+        Returns the ``remove_ack`` payload. ``ok=false`` with
+        ``error=ESP_ERR_NOT_FOUND`` is normal for a stale DB row whose
+        firmware entry is already gone; callers treat it as non-fatal.
+        """
+        if not self.is_connected():
+            raise HubConnectionError()
+        result = await self._client.remove_device(ieee)
+        logger.info(
+            "remove_device_done",
+            ieee=ieee,
+            ok=result.get("ok"),
+            status=result.get("status"),
+        )
+        return result
+
     async def fetch_devices(self) -> List[Dict[str, Any]]:
         if not self.is_connected():
             raise HubConnectionError()

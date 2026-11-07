@@ -243,6 +243,56 @@ esp_err_t zb_device_mgr_remove(uint64_t ieee)
 	return ESP_ERR_NOT_FOUND;
 }
 
+/* Response handler for the fire-and-forget leave request below. The device
+ * table is already cleaned up by the time this fires; only log the outcome. */
+static void zb_device_mgr_leave_cb(esp_zb_zdp_status_t zdp_status, void *user_ctx)
+{
+	(void)user_ctx;
+	ESP_LOGI(TAG, "Leave request completed, status: %d", zdp_status);
+}
+
+esp_err_t zb_device_mgr_send_leave_and_remove(uint64_t ieee)
+{
+	const zb_device_record_t *dev = zb_device_mgr_get(ieee);
+	if (dev == NULL) {
+		return ESP_ERR_NOT_FOUND;
+	}
+	uint16_t nwk_addr = dev->network_addr;
+
+	/* Best-effort: ask the device to leave the network. A ghost entry
+	 * (device already gone or factory-reset) will never answer, so the
+	 * local table removal below must not depend on this succeeding. */
+	esp_zb_ieee_addr_t ieee_addr = {0};
+	memcpy(ieee_addr, &ieee, sizeof(ieee_addr));
+	esp_zb_zdo_mgmt_leave_req_param_t req = {
+		.device_address  = {0},
+		.dst_nwk_addr    = nwk_addr,
+		.remove_children = 0,
+		.rejoin          = 0,
+	};
+	memcpy(req.device_address, &ieee, sizeof(req.device_address));
+
+	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for leave request");
+		return ESP_ERR_TIMEOUT;
+	}
+	esp_zb_zdo_device_leave_req(&req, zb_device_mgr_leave_cb, NULL);
+	esp_zb_lock_release();
+
+	/* Drop the record and its liveness entry regardless of the device's
+	 * answer, then notify the host so it can drop the matching DB row. */
+	esp_err_t err = zb_device_mgr_remove(ieee);
+	if (err == ESP_OK) {
+		com_event_t evt = {
+			.type = COM_EVT_DEVICE_LEFT,
+		};
+		evt.payload.device_left.ieee_addr = ieee;
+		evt.payload.device_left.reason = "removed";
+		com_pipeline_emit(&evt);
+	}
+	return err;
+}
+
 const zb_device_record_t *zb_device_mgr_get(uint64_t ieee)
 {
 	xSemaphoreTake(s_mutex, portMAX_DELAY);

@@ -7,6 +7,8 @@ from sqlalchemy import delete
 
 from app.db import async_session
 from app.models.db_models import Device, DeviceAlias
+from app.exceptions import HubConnectionError
+from app.repositories.device import DeviceRepository
 from app.services.event_bus import EventBus
 from app.services.hub_service import HubService
 
@@ -110,3 +112,46 @@ async def test_update_device_state_caches_static_attrs_into_endpoints():
         }
         assert ep["ct_min"] == 250
         assert ep["ct_max"] == 454
+
+
+def test_delete_device_removes_firmware_entry_and_db_row(client):
+    """DELETE should call the firmware remove first, then drop the DB row + alias."""
+    asyncio = pytest.importorskip("asyncio")
+    asyncio.run(_seed_device())
+    event_bus = EventBus()
+    hub = HubService(event_bus=event_bus)
+    hub.remove_device = AsyncMock(return_value={"ok": True})
+    client.app.state.hub_service = hub
+
+    response = client.delete("/api/devices/00:11:22:33:44:55:66:77")
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    hub.remove_device.assert_awaited_once_with("00:11:22:33:44:55:66:77")
+
+    async def _assert_gone():
+        async with async_session() as session:
+            repo = DeviceRepository(session)
+            assert await repo.get_by_ieee("00:11:22:33:44:55:66:77") is None
+
+    asyncio.run(_assert_gone())
+
+
+def test_delete_device_survives_hub_unreachable(client):
+    """A disconnected hub must not block the DB cleanup (ghost rows must die)."""
+    asyncio = pytest.importorskip("asyncio")
+    asyncio.run(_seed_device())
+    event_bus = EventBus()
+    hub = HubService(event_bus=event_bus)
+    hub.remove_device = AsyncMock(side_effect=HubConnectionError())
+    client.app.state.hub_service = hub
+
+    response = client.delete("/api/devices/00:11:22:33:44:55:66:77")
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+
+    async def _assert_gone():
+        async with async_session() as session:
+            repo = DeviceRepository(session)
+            assert await repo.get_by_ieee("00:11:22:33:44:55:66:77") is None
+
+    asyncio.run(_assert_gone())

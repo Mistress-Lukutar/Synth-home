@@ -40,6 +40,8 @@ esp_err_t zb_device_mgr_add(uint64_t ieee, uint16_t nwk_addr,
 
 esp_err_t zb_device_mgr_remove(uint64_t ieee);
 
+esp_err_t zb_device_mgr_send_leave_and_remove(uint64_t ieee);
+
 const zb_device_record_t *zb_device_mgr_get(uint64_t ieee);
 
 const zb_device_record_t *zb_device_mgr_get_by_short_addr(uint16_t short_addr);
