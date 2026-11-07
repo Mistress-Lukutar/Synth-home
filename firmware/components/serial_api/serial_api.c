@@ -8,6 +8,7 @@
 #include "freertos/semphr.h"
 #include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 #include "cJSON.h"
 
 #include "zb_device_mgr.h"
@@ -38,7 +39,9 @@ static const char *TAG = "serial_api";
 #define SERIAL_CMD_QUEUE_LEN  16
 #define SERIAL_TX_QUEUE_LEN   64
 #define SERIAL_LINE_MAX       512
-#define SERIAL_TASK_STACK     4096
+/* 5 KB: the worker runs ZBOSS send paths (frame build, cJSON trees for
+ * device_list) that need more headroom than a bare console task. */
+#define SERIAL_TASK_STACK     5120
 
 #define MAX_PENDING_PINGS 32
 
@@ -57,6 +60,9 @@ static pending_ping_t s_pending_pings[MAX_PENDING_PINGS];
 static SemaphoreHandle_t s_stdout_mutex = NULL;
 static QueueHandle_t s_cmd_queue = NULL;
 static QueueHandle_t s_tx_queue = NULL;
+static TaskHandle_t s_rx_task_handle = NULL;
+static TaskHandle_t s_worker_task_handle = NULL;
+static TaskHandle_t s_tx_task_handle = NULL;
 
 /* Forward declarations */
 static void send_json_line(cJSON *root);
@@ -144,6 +150,20 @@ static void send_simple_error(const char *message)
 	cJSON *err = cJSON_CreateObject();
 	cJSON_AddStringToObject(err, "evt", "error");
 	cJSON_AddStringToObject(err, "message", message);
+	send_json_line(err);
+	cJSON_Delete(err);
+}
+
+/* Error answer that echoes the caller's correlation_id so the host does not
+ * wait for a TTL on a command the firmware refused outright. */
+static void send_error_corr(const char *message, const char *corr_id)
+{
+	cJSON *err = cJSON_CreateObject();
+	cJSON_AddStringToObject(err, "evt", "error");
+	cJSON_AddStringToObject(err, "message", message);
+	if (corr_id && corr_id[0] != '\0') {
+		cJSON_AddStringToObject(err, "correlation_id", corr_id);
+	}
 	send_json_line(err);
 	cJSON_Delete(err);
 }
@@ -503,11 +523,15 @@ static void dispatch_command(cJSON *root)
 		if (cJSON_IsString(ieee)) {
 			handle_ping(ieee->valuestring,
 				    cJSON_IsString(corr) ? corr->valuestring : NULL);
+		} else {
+			send_error_corr("missing or invalid 'ieee'", corr_id);
 		}
 	} else if (strcmp(cmd_str, "permit") == 0) {
 		cJSON *dur = cJSON_GetObjectItem(root, "duration");
 		if (cJSON_IsNumber(dur)) {
 			handle_permit((uint8_t)dur->valuedouble);
+		} else {
+			send_error_corr("missing or invalid 'duration'", corr_id);
 		}
 	} else {
 		send_simple_error("unknown_cmd");
@@ -649,6 +673,7 @@ static void rx_task(void *arg)
 	bool overflow = false;
 
 	while (1) {
+		esp_task_wdt_reset();
 		int n = usb_serial_jtag_read_bytes(chunk, sizeof(chunk),
 						   pdMS_TO_TICKS(100));
 		if (n < 0) {
@@ -688,7 +713,13 @@ static void cmd_worker_task(void *arg)
 	serial_cmd_msg_t msg;
 
 	while (1) {
-		if (xQueueReceive(s_cmd_queue, &msg, portMAX_DELAY) == pdTRUE) {
+		/* Watchdog kick every iteration: idle wakeups stay under the TWDT
+		 * window, and a dispatch wedged inside a ZBOSS send path (>5 s, no
+		 * kick) panics with a backtrace instead of the hub going mute
+		 * until a manual reset. Dispatch is bounded to ~1.3 s otherwise
+		 * (pace + Zigbee lock timeout + cJSON). */
+		esp_task_wdt_reset();
+		if (xQueueReceive(s_cmd_queue, &msg, pdMS_TO_TICKS(2000)) == pdTRUE) {
 			dispatch_command(msg.root);
 			cJSON_Delete(msg.root);
 		}
@@ -703,7 +734,8 @@ static void tx_task(void *arg)
 	setvbuf(stdout, NULL, _IONBF, 0);
 
 	while (1) {
-		if (xQueueReceive(s_tx_queue, &line, portMAX_DELAY) == pdTRUE) {
+		esp_task_wdt_reset();
+		if (xQueueReceive(s_tx_queue, &line, pdMS_TO_TICKS(2000)) == pdTRUE) {
 			if (s_stdout_mutex) {
 				xSemaphoreTake(s_stdout_mutex, portMAX_DELAY);
 			}
@@ -807,16 +839,34 @@ esp_err_t serial_api_init(void)
 
 	com_pipeline_subscribe(serial_event_handler, NULL);
 
-	BaseType_t ok = xTaskCreate(rx_task, "serial_rx", SERIAL_TASK_STACK, NULL, 6, NULL);
+	BaseType_t ok = xTaskCreate(rx_task, "serial_rx", SERIAL_TASK_STACK, NULL, 6,
+				    &s_rx_task_handle);
 	if (ok == pdPASS) {
-		ok = xTaskCreate(cmd_worker_task, "serial_cmd", SERIAL_TASK_STACK, NULL, 5, NULL);
+		ok = xTaskCreate(cmd_worker_task, "serial_cmd", SERIAL_TASK_STACK, NULL, 5,
+				 &s_worker_task_handle);
 	}
 	if (ok == pdPASS) {
-		ok = xTaskCreate(tx_task, "serial_tx", SERIAL_TASK_STACK, NULL, 5, NULL);
+		ok = xTaskCreate(tx_task, "serial_tx", SERIAL_TASK_STACK, NULL, 5,
+				 &s_tx_task_handle);
 	}
 	if (ok != pdPASS) {
 		ESP_LOGE(TAG, "Failed to create serial tasks");
 		return ESP_ERR_NO_MEM;
+	}
+
+	/* Subscribe the serial tasks to the task watchdog. The worker must kick
+	 * per command; a wedge inside a ZBOSS send path then panics with a
+	 * backtrace (and reboots, CONFIG_ESP_TASK_WDT_PANIC) instead of leaving
+	 * the hub mute until a manual reset. */
+	const TaskHandle_t wdt_tasks[] = {
+		s_rx_task_handle, s_worker_task_handle, s_tx_task_handle,
+	};
+	for (size_t i = 0; i < sizeof(wdt_tasks) / sizeof(wdt_tasks[0]); i++) {
+		esp_err_t wdt_err = esp_task_wdt_add(wdt_tasks[i]);
+		if (wdt_err != ESP_OK) {
+			ESP_LOGW(TAG, "TWDT subscribe failed for serial task %d: %s",
+				 (int)i, esp_err_to_name(wdt_err));
+		}
 	}
 	return ESP_OK;
 }

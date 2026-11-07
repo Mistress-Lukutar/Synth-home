@@ -36,6 +36,40 @@ static SemaphoreHandle_t s_pace_mutex = NULL;
 /* Internal helpers                                                           */
 /* -------------------------------------------------------------------------- */
 
+/*
+ * Zigbee lock health guard. Every sender uses a bounded lock acquire, so a
+ * transiently busy stack just fails that command. But if the lock stays
+ * unavailable across many consecutive attempts, the stack (or whoever holds
+ * the lock) is wedged: the hub would answer every command with an error
+ * until a manual reset. Restart instead so the hub self-recovers.
+ */
+#define ZB_LOCK_ACQUIRE_TIMEOUT_MS 1000
+#define ZB_LOCK_FAIL_RESTART_AFTER 8
+
+static portMUX_TYPE s_lock_health_mux = portMUX_INITIALIZER_UNLOCKED;
+static uint8_t s_lock_fail_streak = 0;
+
+static bool zb_lock_take(const char *who)
+{
+	bool ok = esp_zb_lock_acquire(pdMS_TO_TICKS(ZB_LOCK_ACQUIRE_TIMEOUT_MS));
+
+	taskENTER_CRITICAL(&s_lock_health_mux);
+	if (ok) {
+		s_lock_fail_streak = 0;
+	} else {
+		s_lock_fail_streak++;
+	}
+	uint8_t streak = s_lock_fail_streak;
+	taskEXIT_CRITICAL(&s_lock_health_mux);
+
+	if (streak >= ZB_LOCK_FAIL_RESTART_AFTER) {
+		ESP_LOGE(TAG, "Zigbee lock unavailable %d times in a row (%s), "
+			 "restarting", streak, who);
+		esp_restart();
+	}
+	return ok;
+}
+
 esp_err_t zb_clusters_init(void)
 {
 	if (s_pace_mutex != NULL) {
@@ -56,7 +90,12 @@ static void pace_air_time(uint64_t ieee)
 	}
 
 	int64_t wait_ms = 0;
-	xSemaphoreTake(s_pace_mutex, portMAX_DELAY);
+	/* Bounded take with fail-open: an unpaced frame is far better than a
+	 * command path wedged behind a lost mutex. */
+	if (xSemaphoreTake(s_pace_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+		ESP_LOGW(TAG, "Pace mutex unavailable, sending unpaced");
+		return;
+	}
 	zb_tx_pace_slot_t *slot = NULL;
 	for (int i = 0; i < ZB_TX_PACE_SLOTS; i++) {
 		if (s_pace_slots[i].ieee == ieee && s_pace_slots[i].last_tx_ms != 0) {
@@ -224,7 +263,7 @@ esp_err_t zb_cluster_send_on_off(uint64_t ieee, uint8_t cmd_id,
 
 	pace_air_time(ieee);
 
-	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+	if (!zb_lock_take("ON/OFF")) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for ON/OFF");
 		emit_command_failed(corr_id, "ZIGBEE_LOCK_TIMEOUT", "Zigbee stack busy");
 		zb_cmd_tracker_release(slot);
@@ -275,7 +314,7 @@ esp_err_t zb_cluster_send_level(uint64_t ieee, uint8_t level,
 
 	pace_air_time(ieee);
 
-	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+	if (!zb_lock_take("Level")) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for Level");
 		emit_command_failed(corr_id, "ZIGBEE_LOCK_TIMEOUT", "Zigbee stack busy");
 		zb_cmd_tracker_release(slot);
@@ -372,7 +411,7 @@ esp_err_t zb_cluster_send_color_hs(uint64_t ieee, uint8_t hue, uint8_t sat,
 
 	pace_air_time(ieee);
 
-	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+	if (!zb_lock_take("Color HS")) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for Color HS");
 		emit_command_failed(corr_id, "ZIGBEE_LOCK_TIMEOUT", "Zigbee stack busy");
 		zb_cmd_tracker_release(slot);
@@ -427,7 +466,7 @@ esp_err_t zb_cluster_send_color_xy(uint64_t ieee, uint16_t x, uint16_t y,
 
 	pace_air_time(ieee);
 
-	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+	if (!zb_lock_take("Color XY")) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for Color XY");
 		emit_command_failed(corr_id, "ZIGBEE_LOCK_TIMEOUT", "Zigbee stack busy");
 		zb_cmd_tracker_release(slot);
@@ -480,7 +519,7 @@ esp_err_t zb_cluster_send_color_ct(uint64_t ieee, uint16_t mireds,
 
 	pace_air_time(ieee);
 
-	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+	if (!zb_lock_take("Color CT")) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for Color CT");
 		emit_command_failed(corr_id, "ZIGBEE_LOCK_TIMEOUT", "Zigbee stack busy");
 		zb_cmd_tracker_release(slot);
@@ -550,7 +589,7 @@ static esp_err_t s_cluster_read_attrs(uint64_t ieee, uint8_t ep_id,
 
 	pace_air_time(ieee);
 
-	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+	if (!zb_lock_take("read attr")) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for read attr");
 		emit_command_failed(corr_id, "ZIGBEE_LOCK_TIMEOUT", "Zigbee stack busy");
 		zb_cmd_tracker_release(slot);
@@ -622,7 +661,7 @@ esp_err_t zb_cluster_send_bind_req(uint16_t network_addr, uint64_t ieee_addr,
 	memset(coord_ieee, 0, sizeof(coord_ieee));
 	memset(src_ieee, 0, sizeof(src_ieee));
 
-	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+	if (!zb_lock_take("bind request")) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for bind request");
 		return ESP_FAIL;
 	}
@@ -642,7 +681,7 @@ esp_err_t zb_cluster_send_bind_req(uint16_t network_addr, uint64_t ieee_addr,
 	memcpy(bind_req.dst_address_u.addr_long, coord_ieee,
 	       sizeof(bind_req.dst_address_u.addr_long));
 
-	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+	if (!zb_lock_take("bind request")) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for bind request");
 		return ESP_FAIL;
 	}
@@ -697,7 +736,7 @@ esp_err_t zb_cluster_send_configure_reporting(uint16_t network_addr, uint8_t ep_
 		.record_field = &record,
 	};
 
-	if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+	if (!zb_lock_take("configure reporting")) {
 		ESP_LOGE(TAG, "Failed to acquire Zigbee lock for configure reporting");
 		return ESP_FAIL;
 	}

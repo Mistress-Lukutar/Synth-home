@@ -530,9 +530,16 @@ esp_err_t zb_stack_send_zcl_cmd(uint16_t short_addr,
     req.data.size = payload_len;
     req.data.value = (void *)payload;
 
-    esp_zb_lock_acquire(portMAX_DELAY);
-    esp_zb_zcl_custom_cluster_cmd_req(&req);
+    if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+        ESP_LOGE(TAG, "Failed to acquire Zigbee lock for ZCL cmd");
+        return ESP_ERR_TIMEOUT;
+    }
+    uint8_t status = esp_zb_zcl_custom_cluster_cmd_req(&req);
     esp_zb_lock_release();
+    if (status == 0xFF) {
+        ESP_LOGE(TAG, "Failed to send ZCL custom cmd");
+        return ESP_FAIL;
+    }
 
     return ESP_OK;
 }
